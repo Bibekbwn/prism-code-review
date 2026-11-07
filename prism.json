@@ -1,0 +1,19 @@
+{
+  "agents": [
+    "security",
+    "quality",
+    "policy",
+    "test",
+    "ai_reviewer"
+  ],
+  "block_on": [
+    "critical",
+    "high"
+  ],
+  "quality_gates": {
+    "max_complexity": 10,
+    "max_file_length": 500,
+    "min_coverage": 0
+  },
+  "confidence_threshold": 0.7
+}

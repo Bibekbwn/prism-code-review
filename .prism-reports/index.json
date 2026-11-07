@@ -1,0 +1,17 @@
+{
+  "reports": [
+    {
+      "id": "20261107T133240Z",
+      "timestamp": "2026-11-07T13:32:40.349082+00:00",
+      "commit_hash": "HEAD",
+      "branch": "HEAD",
+      "files_reviewed": [
+        "test_bad.py"
+      ],
+      "total_findings": 4,
+      "blocking": 2,
+      "risk_score": 0.0,
+      "commit_allowed": false
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PRISM Dashboard</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; padding: 20px; }
+h1 { font-size: 28px; margin-bottom: 20px; color: #38bdf8; }
+.container { max-width: 1200px; margin: 0 auto; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 30px; }
+.stat-card { background: #1e293b; border-radius: 12px; padding: 20px; text-align: center; border: 1px solid #334155; }
+.stat-value { font-size: 36px; font-weight: bold; }
+.stat-label { font-size: 14px; color: #94a3b8; margin-top: 4px; }
+.timeline { position: relative; padding-left: 30px; }
+.timeline::before { content: ''; position: absolute; left: 8px; top: 0; bottom: 0; width: 2px; background: #334155; }
+.report-item { position: relative; margin-bottom: 24px; padding: 16px; background: #1e293b; border-radius: 10px; border: 1px solid #334155; }
+.report-item::before { content: ''; position: absolute; left: -26px; top: 20px; width: 12px; height: 12px; border-radius: 50%; background: #60a5fa; }
+.report-date { font-size: 13px; color: #94a3b8; }
+.report-files { font-size: 14px; margin: 8px 0; }
+.report-risk { font-size: 18px; font-weight: bold; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>PRISM Report Dashboard</h1>
+<div id="reports">Loading...</div>
+</div>
+<script>
+function loadReports() {
+  fetch('.prism-reports/index.json')
+    .then(r => r.json())
+    .then(data => render(data))
+    .catch(() => document.getElementById('reports').innerHTML = '<p>No reports found.</p>');
+}
+function render(data) {
+  const reports = data.reports || [];
+  if (!reports.length) { document.getElementById('reports').innerHTML = '<p>No reports found.</p>'; return; }
+  let html = '';
+  const total = reports.length;
+  const blocked = reports.filter(r => !r.commit_allowed).length;
+  const findings = reports.reduce((s, r) => s + r.total_findings, 0);
+  html += '<div class="stats">';
+  html += '<div class="stat-card"><div class="stat-value">' + total + '</div><div class="stat-label">Total Reviews</div></div>';
+  html += '<div class="stat-card"><div class="stat-value">' + blocked + '</div><div class="stat-label">Blocked</div></div>';
+  html += '<div class="stat-card"><div class="stat-value">' + findings + '</div><div class="stat-label">Findings</div></div>';
+  html += '</div>';
+  html += '<div class="timeline">';
+  reports.slice().reverse().forEach(r => {
+    const date = new Date(r.timestamp).toLocaleDateString() + ' ' + new Date(r.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    html += '<div class="report-item">';
+    html += '<div class="report-date">' + date + '</div>';
+    html += '<div class="report-risk">Risk: ' + Math.round(r.risk_score * 100) + '% ' + (r.commit_allowed ? 'PASS' : 'BLOCKED') + '</div>';
+    html += '<div class="report-files">' + r.total_findings + ' findings, ' + r.blocking + ' blocking</div>';
+    html += '</div>';
+  });
+  html += '</div>';
+  document.getElementById('reports').innerHTML = html;
+}
+loadReports();
+</script>
+</body>
+</html>

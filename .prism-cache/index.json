@@ -1,0 +1,59 @@
+{
+  "files": {
+    ".\\prism\\__init__.py": {
+      "hash": "1a20793de472e547"
+    },
+    ".\\prism\\agents.py": {
+      "hash": "8febeca72aef25f9"
+    },
+    ".\\prism\\agents_ai.py": {
+      "hash": "7706dde79aad9b51"
+    },
+    ".\\prism\\agents_policy.py": {
+      "hash": "4a3784e3c73a761b"
+    },
+    ".\\prism\\agents_quality.py": {
+      "hash": "74899edcbfe1e944"
+    },
+    ".\\prism\\agents_security.py": {
+      "hash": "90cfb172833b4be0"
+    },
+    ".\\prism\\agents_test.py": {
+      "hash": "267e306cb5441f1c"
+    },
+    ".\\prism\\autofix.py": {
+      "hash": "d179a9618cbd7d43"
+    },
+    ".\\prism\\cli.py": {
+      "hash": "585dccfc7fccb443"
+    },
+    ".\\prism\\codebase_cache.py": {
+      "hash": "22019d2fe584d3f0"
+    },
+    ".\\prism\\context.py": {
+      "hash": "4fd22b6f7d0dc296"
+    },
+    ".\\prism\\feedback.py": {
+      "hash": "8533988706dd974f"
+    },
+    ".\\prism\\logging_config.py": {
+      "hash": "a7ca89efae9f32ae"
+    },
+    ".\\prism\\reports.py": {
+      "hash": "5d58125edad6fbfe"
+    },
+    ".\\prism\\setup.py": {
+      "hash": "cbb5288153f95163"
+    },
+    ".\\tests\\conftest.py": {
+      "hash": "e3c18a35000a5a90"
+    },
+    ".\\tests\\test_integration.py": {
+      "hash": "f63eb6db6b663a1e"
+    },
+    ".\\tests\\test_security.py": {
+      "hash": "cf6ef38c82eb279b"
+    }
+  },
+  "last_scan": "2026-11-07T18:38:57.835374"
+}

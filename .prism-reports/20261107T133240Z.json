@@ -1,0 +1,59 @@
+{
+  "id": "20261107T133240Z",
+  "timestamp": "2026-11-07T13:32:40.349082+00:00",
+  "commit_hash": "HEAD",
+  "branch": "HEAD",
+  "files_reviewed": [
+    "test_bad.py"
+  ],
+  "total_findings": 4,
+  "blocking": 2,
+  "risk_score": 0.0,
+  "commit_allowed": false,
+  "findings": [
+    {
+      "agent": "security",
+      "severity": "critical",
+      "category": "Secret Exposure",
+      "message": "Password detected",
+      "file": "test_bad.py",
+      "line": 1,
+      "suggestion": "Use os.environ.get('PASSWORD') instead",
+      "confidence": 0.95,
+      "rule_id": "SECU-103"
+    },
+    {
+      "agent": "security",
+      "severity": "high",
+      "category": "Dangerous Pattern",
+      "message": "Use of eval() - code injection risk",
+      "file": "test_bad.py",
+      "line": 2,
+      "suggestion": "Use ast.literal_eval() for safe parsing",
+      "confidence": 0.8,
+      "rule_id": "SECU-201"
+    },
+    {
+      "agent": "policy",
+      "severity": "medium",
+      "category": "Missing Header",
+      "message": "Missing copyright notice in file header",
+      "file": "test_bad.py",
+      "line": 1,
+      "suggestion": "Add copyright header with year and author.",
+      "confidence": 1.0,
+      "rule_id": "POL-101"
+    },
+    {
+      "agent": "policy",
+      "severity": "low",
+      "category": "Banned Pattern",
+      "message": "Use logging module instead of print()",
+      "file": "test_bad.py",
+      "line": 2,
+      "suggestion": "Use logging module instead of print()",
+      "confidence": 1.0,
+      "rule_id": "POL-202"
+    }
+  ]
+}

@@ -1,0 +1,189 @@
+"""
+Local report storage for PRISM findings.
+
+Saves every review result to .prism-reports/ so developers can:
+- View history of all reviews
+- See what was fixed and what remains
+- Track risk score over time
+- Review past findings without re-running
+
+No server, no database, no cloud — just local JSON files.
+"""
+
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, List, Optional
+
+REPORTS_DIR = ".prism-reports"
+REPORT_INDEX = os.path.join(REPORTS_DIR, "index.json")
+
+
+def _ensure_dir():
+    Path(REPORTS_DIR).mkdir(parents=True, exist_ok=True)
+
+
+def save_report(
+    files_reviewed: List[str],
+    findings: List[dict],
+    risk_score: float,
+    blocking: int,
+    commit_allowed: bool,
+    commit_hash: str = "",
+    branch: str = "",
+) -> str:
+    """Save a review report to .prism-reports/ and return the report ID."""
+    _ensure_dir()
+
+    report_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    report = {
+        "id": report_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "commit_hash": commit_hash,
+        "branch": branch,
+        "files_reviewed": files_reviewed,
+        "total_findings": len(findings),
+        "blocking": blocking,
+        "risk_score": risk_score,
+        "commit_allowed": commit_allowed,
+        "findings": findings,
+    }
+
+    # Save individual report
+    report_path = os.path.join(REPORTS_DIR, f"{report_id}.json")
+    with open(report_path, "w") as f:
+        json.dump(report, f, indent=2)
+
+    # Update index
+    _update_index(report_id, report)
+
+    return report_id
+
+
+def _update_index(report_id: str, report: dict):
+    """Add or update entry in the index file."""
+    index = load_index()
+    index["reports"].append({
+        "id": report_id,
+        "timestamp": report["timestamp"],
+        "commit_hash": report["commit_hash"],
+        "branch": report["branch"],
+        "files_reviewed": report["files_reviewed"],
+        "total_findings": report["total_findings"],
+        "blocking": report["blocking"],
+        "risk_score": report["risk_score"],
+        "commit_allowed": report["commit_allowed"],
+    })
+    # Keep last 500 entries
+    if len(index["reports"]) > 500:
+        index["reports"] = index["reports"][-500:]
+
+    with open(REPORT_INDEX, "w") as f:
+        json.dump(index, f, indent=2)
+
+
+def load_index() -> dict:
+    """Load the report index."""
+    if os.path.exists(REPORT_INDEX):
+        with open(REPORT_INDEX) as f:
+            return json.load(f)
+    return {"reports": []}
+
+
+def load_report(report_id: str) -> Optional[dict]:
+    """Load a specific report by ID."""
+    path = os.path.join(REPORTS_DIR, f"{report_id}.json")
+    if os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    return None
+
+
+def get_recent_reports(limit: int = 20) -> List[dict]:
+    """Get the most recent reports."""
+    index = load_index()
+    return index["reports"][-limit:]
+
+
+def get_findings_history() -> dict:
+    """Get a summary of findings over time for trend analysis."""
+    index = load_index()
+    trends = {
+        "total_reviews": len(index["reports"]),
+        "total_findings": 0,
+        "total_blocking": 0,
+        "commits_blocked": 0,
+        "risk_scores": [],
+        "findings_by_severity": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+        "findings_by_agent": {},
+        "findings_by_rule": {},
+    }
+
+    for r in index["reports"]:
+        trends["total_findings"] += r["total_findings"]
+        trends["total_blocking"] += r["blocking"]
+        if not r["commit_allowed"]:
+            trends["commits_blocked"] += 1
+        trends["risk_scores"].append({
+            "timestamp": r["timestamp"],
+            "risk_score": r["risk_score"],
+        })
+
+    # Scan individual reports for detailed stats
+    for r in index["reports"]:
+        report = load_report(r["id"])
+        if report:
+            for f in report.get("findings", []):
+                sev = f.get("severity", "unknown")
+                agent = f.get("agent", "unknown")
+                rule = f.get("rule_id", "unknown")
+                trends["findings_by_severity"][sev] = \
+                    trends["findings_by_severity"].get(sev, 0) + 1
+                trends["findings_by_agent"][agent] = \
+                    trends["findings_by_agent"].get(agent, 0) + 1
+                if rule:
+                    trends["findings_by_rule"][rule] = \
+                        trends["findings_by_rule"].get(rule, 0) + 1
+
+    return trends
+
+
+def clear_reports():
+    """Delete all reports."""
+    import shutil
+    if os.path.exists(REPORTS_DIR):
+        shutil.rmtree(REPORTS_DIR)
+    return True
+
+
+def get_report_summary() -> str:
+    """Get a human-readable summary of all reports."""
+    trends = get_findings_history()
+    lines = [
+        "PRISM Report Summary",
+        "====================",
+        f"Total reviews: {trends['total_reviews']}",
+        f"Total findings: {trends['total_findings']}",
+        f"Commits blocked: {trends['commits_blocked']}",
+        "",
+        "By Severity:",
+    ]
+    for sev, count in trends["findings_by_severity"].items():
+        lines.append(f"  {sev}: {count}")
+
+    lines.append("")
+    lines.append("By Agent:")
+    for agent, count in trends["findings_by_agent"].items():
+        lines.append(f"  {agent}: {count}")
+
+    if trends["findings_by_rule"]:
+        lines.append("")
+        lines.append("Top Rules:")
+        for rule, count in sorted(
+            trends["findings_by_rule"].items(),
+            key=lambda x: x[1], reverse=True
+        )[:10]:
+            lines.append(f"  {rule}: {count}")
+
+    return "\n".join(lines)
