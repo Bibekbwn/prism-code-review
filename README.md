@@ -1,39 +1,116 @@
 # PRISM - Pre-Commit Code Review System
 
-Multi-agent code review pipeline that runs on the developer's machine before pushing to GitHub. Each agent checks a specific concern: security, quality, policy, tests, and AI semantic review.
+Multi-agent code review pipeline that runs on the developer's machine before pushing to GitHub. Each agent uses a specialized prompt for a specific concern. **Your code never leaves your machine.**
+
+## Features
+
+| Feature | Description |
+|---------|-------------|
+| **6 AI agents** | Security, quality, policy, test, architecture, performance — each with a specialized prompt |
+| **IDE integration** | LSP server (`prism lsp`) shows findings inline in VS Code, Vim, Emacs, Zed, Helix |
+| **Test execution** | `--test` flag runs pytest on changed files before review |
+| **Finding verification** | Regex agents cross-check AI claims (CodeRabbit verification pattern) |
+| **Function-level call graph** | Blast radius awareness — knows who calls what |
+| **4-tier file handling** | 10-line to 10K+ line files, chunked with overlap, adaptive timeouts |
+| **Multi-provider** | Switch Gemini / Claude / OpenAI via `MODEL_PROVIDER` |
+| **Auto-fix** | One-click fixes for secrets, eval, debugger, banned patterns |
+| **SCA dependency scan** | Real CVE lookups for npm, PyPI, crates.io |
+| **Zero cost** | Self-hosted, free tier of any provider |
 
 ## How It Works
 
 ```
-Developer pushes code
-    │
-    ├─→ PRISM CLI (local pre-commit hook)
-    │       ├─→ Security Agent (SECU-XXX)
-    │       ├─→ Quality Agent (QUAL-XXX)
-    │       ├─→ Policy Agent (POL-XXX)
-    │       ├─→ Test Agent (TST-XXX)
-    │       └─→ AI Reviewer (AIREV-XXX) via Gemini
-    │
-    ├─→ GitHub Actions (CI/CD)
-    │       └─→ Posts PR comments + status checks
-    │
-    └─→ Backend Webhook (production)
-            └─→ Supabase findings storage
-            └─→ Celery async processing
+git commit
+  ├─→ pre-commit-hook → prism check-staged [--test]
+  │       ├─→ Run tests on changed files (optional)
+  │       ├─→ AI Security Agent (SECU-XXX) - secrets, injection, auth flaws
+  │       ├─→ AI Quality Agent (QUAL-XXX) - complexity, duplication, maintainability
+  │       ├─→ AI Policy Agent (POL-XXX) - documentation, compliance, standards
+  │       ├─→ AI Test Agent (TST-XXX) - test coverage, edge cases, test quality
+  │       ├─→ AI Architecture Agent (ARC-XXX) - modularity, scalability, abstraction
+  │       └─→ AI Performance Agent (PERF-XXX) - complexity, bottlenecks, memory
+  │
+  └─→ GitHub Actions (CI/CD)
+          └─→ Posts PR comments + status checks
 ```
+
+## Quick Start
+
+```bash
+# 1. Install
+pip install -e .
+
+# 2. Configure your API key
+cp .env.example .env
+# Edit .env: GEMINI_API_KEY=your_key_here
+
+# 3. Install the pre-commit hook
+prism install-hook
+
+# 4. Commit — PRISM reviews automatically
+git add . && git commit -m "my change"
+
+# 5. IDE integration (inline findings as you type)
+prism lsp
+# See README "IDE Integration" section for editor config
+```
+
+## IDE Integration
+
+PRISM speaks the Language Server Protocol (LSP) — any editor with LSP support shows findings inline.
+
+**VS Code:**
+```json
+{
+  "languages.python": {
+    "uri": "file:///abs/path/to/hackathon/prism/lsp.py"
+  }
+}
+```
+
+**Vim (with vim-lsp or coc.nvim):**
+```viml
+let g:lsp_settings['prism'] = {
+  \ 'command': ['python', 'prism/lsp.py'],
+  \ 'filetypes': ['python'],
+  \ 'rootPatterns': ['.git', 'prism.json'],
+  \}
+```
+
+**Emacs (with eglot):**
+```elisp
+(eglot-install-servers
+  '((python . ("python" "prism/lsp.py")) :major-mode python-mode))
+```
+
+The LSP server has zero external dependencies — it uses only the Python standard library.
 
 ## Stack
 
 | Component | Technology |
 |-----------|-----------|
 | CLI | Python 3.13+, argparse, dataclasses |
-| AI | Google Gemini (gemini-3.8-flash) |
+| AI | Google Gemini (gemini-3.5-flash-lite) |
 | Backend | FastAPI + Uvicorn |
 | Database | Supabase (PostgreSQL) |
 | Queue | Celery + Redis |
 | Metrics | Prometheus |
 | Auth | JWT + bcrypt |
 | CI/CD | GitHub Actions |
+
+## AI Agents
+
+| Agent | What It Checks |
+|-------|---------------|
+| **ai_security** | Hardcoded secrets, injection vulnerabilities, auth flaws, crypto weaknesses, insecure dependencies |
+| **ai_quality** | Code complexity, duplication, maintainability, naming, dead code, architecture issues |
+| **ai_policy** | Missing documentation, banned patterns, license compliance, logging gaps, error handling policies |
+| **ai_test** | Test coverage gaps, weak test cases, missing edge cases, untested code paths |
+
+Each agent uses a specialized Gemini prompt and returns findings with:
+- **Problem** - what the issue is
+- **Suggestion** - text explanation
+- **Suggested code** - actual code to fix the issue
 
 ## Severity Levels
 

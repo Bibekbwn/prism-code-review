@@ -1,0 +1,301 @@
+{
+  "id": "20261109T080015Z",
+  "timestamp": "2026-11-09T08:00:15.481679+00:00",
+  "commit_hash": "55e569521c6da0a8fc9ff5500ea5bef683295112",
+  "branch": "main",
+  "files_reviewed": [
+    "test_heavy.py"
+  ],
+  "total_findings": 26,
+  "blocking": 19,
+  "risk_score": 0.0,
+  "commit_allowed": false,
+  "findings": [
+    {
+      "agent": "ai_security",
+      "severity": "critical",
+      "category": "Hardcoded secrets",
+      "message": "Hardcoded API key detected in source code.",
+      "file": "test_heavy.py",
+      "line": 13,
+      "suggestion": "Load secrets from environment variables or a secure vault.",
+      "confidence": 0.85,
+      "rule_id": "AI_S-AI-001"
+    },
+    {
+      "agent": "ai_security",
+      "severity": "critical",
+      "category": "Hardcoded secrets",
+      "message": "Hardcoded database password detected in source code.",
+      "file": "test_heavy.py",
+      "line": 14,
+      "suggestion": "Load passwords from environment variables or a secure vault.",
+      "confidence": 0.85,
+      "rule_id": "AI_S-AI-001"
+    },
+    {
+      "agent": "ai_security",
+      "severity": "critical",
+      "category": "Hardcoded secrets",
+      "message": "Hardcoded secret key detected in source code.",
+      "file": "test_heavy.py",
+      "line": 15,
+      "suggestion": "Load secret keys from environment variables.",
+      "confidence": 0.85,
+      "rule_id": "AI_S-AI-001"
+    },
+    {
+      "agent": "ai_security",
+      "severity": "critical",
+      "category": "Hardcoded secrets",
+      "message": "Hardcoded AWS access key detected in source code.",
+      "file": "test_heavy.py",
+      "line": 16,
+      "suggestion": "Use AWS IAM roles or environment variables for credentials.",
+      "confidence": 0.85,
+      "rule_id": "AI_S-AI-001"
+    },
+    {
+      "agent": "ai_security",
+      "severity": "critical",
+      "category": "SQL Injection",
+      "message": "Direct string concatenation of user input into SQL query allows SQL injection.",
+      "file": "test_heavy.py",
+      "line": 21,
+      "suggestion": "Use parameterized queries to safely pass user input.",
+      "confidence": 0.85,
+      "rule_id": "AI_S-AI-001"
+    },
+    {
+      "agent": "ai_security",
+      "severity": "critical",
+      "category": "Code Injection",
+      "message": "Use of eval() on arbitrary input can lead to arbitrary code execution.",
+      "file": "test_heavy.py",
+      "line": 22,
+      "suggestion": "Remove eval() and use safe alternatives.",
+      "confidence": 0.85,
+      "rule_id": "AI_S-AI-001"
+    },
+    {
+      "agent": "ai_security",
+      "severity": "critical",
+      "category": "Command Injection",
+      "message": "Execution of system commands with os.system is prone to command injection.",
+      "file": "test_heavy.py",
+      "line": 23,
+      "suggestion": "Use subprocess with a list of arguments and shell=False.",
+      "confidence": 0.85,
+      "rule_id": "AI_S-AI-001"
+    },
+    {
+      "agent": "ai_security",
+      "severity": "critical",
+      "category": "Insecure Deserialization",
+      "message": "Unsafe deserialization using pickle on untrusted user input allows Remote Code Execution (RCE).",
+      "file": "test_heavy.py",
+      "line": 24,
+      "suggestion": "Use a safe serialization format such as JSON instead of pickle.",
+      "confidence": 0.85,
+      "rule_id": "AI_S-AI-001"
+    },
+    {
+      "agent": "ai_quality",
+      "severity": "high",
+      "category": "Maintainability",
+      "message": "Hardcoded magic number '5.00' used for international shipping surcharge.",
+      "file": "test_heavy.py",
+      "line": 52,
+      "suggestion": "Extract the magic number into a well-named constant.",
+      "confidence": 0.85,
+      "rule_id": "AI_Q-AI-001"
+    },
+    {
+      "agent": "ai_quality",
+      "severity": "high",
+      "category": "Code Complexity",
+      "message": "Function 'process_order_and_charge' is a God function handling validation, business logic, payment processing, persistence, and external notifications.",
+      "file": "test_heavy.py",
+      "line": 23,
+      "suggestion": "Break down the function into smaller, single-responsibility functions.",
+      "confidence": 0.85,
+      "rule_id": "AI_Q-AI-001"
+    },
+    {
+      "agent": "ai_quality",
+      "severity": "medium",
+      "category": "Maintainability",
+      "message": "Use of bare 'except:' clause catches all exceptions including system exits and keyboard interrupts.",
+      "file": "test_heavy.py",
+      "line": 57,
+      "suggestion": "Catch specific exceptions instead of a bare except block.",
+      "confidence": 0.85,
+      "rule_id": "AI_Q-AI-001"
+    },
+    {
+      "agent": "ai_quality",
+      "severity": "medium",
+      "category": "Technical Debt",
+      "message": "Unresolved TODO and FIXME comments indicate lingering technical debt.",
+      "file": "test_heavy.py",
+      "line": 131,
+      "suggestion": "Address the technical debt or track it properly in an issue tracker.",
+      "confidence": 0.85,
+      "rule_id": "AI_Q-AI-001"
+    },
+    {
+      "agent": "ai_policy",
+      "severity": "critical",
+      "category": "Hardcoded Configurations",
+      "message": "Hardcoded API keys, database passwords, and secrets found in source code.",
+      "file": "test_heavy.py",
+      "line": 13,
+      "suggestion": "Move sensitive credentials to environment variables or a secure secret manager.",
+      "confidence": 0.85,
+      "rule_id": "AI_P-AI-001"
+    },
+    {
+      "agent": "ai_policy",
+      "severity": "high",
+      "category": "Banned Patterns",
+      "message": "Use of print() for debugging or logging instead of a structured logging framework.",
+      "file": "test_heavy.py",
+      "line": 63,
+      "suggestion": "Replace print statements with the standard logging module.",
+      "confidence": 0.85,
+      "rule_id": "AI_P-AI-001"
+    },
+    {
+      "agent": "ai_policy",
+      "severity": "high",
+      "category": "Error Handling Policies",
+      "message": "Generic catch block (except Exception as e) catches all exceptions, potentially masking critical errors.",
+      "file": "test_heavy.py",
+      "line": 61,
+      "suggestion": "Catch specific exceptions related to payment processing rather than a generic base Exception.",
+      "confidence": 0.85,
+      "rule_id": "AI_P-AI-001"
+    },
+    {
+      "agent": "ai_policy",
+      "severity": "medium",
+      "category": "Banned Patterns",
+      "message": "TODO and FIXME markers left in production code.",
+      "file": "test_heavy.py",
+      "line": 118,
+      "suggestion": "Address the technical debt or track it in an issue management system instead of leaving markers in code.",
+      "confidence": 0.85,
+      "rule_id": "AI_P-AI-001"
+    },
+    {
+      "agent": "ai_policy",
+      "severity": "low",
+      "category": "License and Copyright Compliance",
+      "message": "Missing copyright notice and license header in the file.",
+      "file": "test_heavy.py",
+      "line": 1,
+      "suggestion": "Add organizational copyright and license header at the top of the file.",
+      "confidence": 0.85,
+      "rule_id": "AI_P-AI-001"
+    },
+    {
+      "agent": "ai_test",
+      "severity": "critical",
+      "category": "Untested Public APIs",
+      "message": "The function `process_user_input` contains high-risk operations (SQL injection, eval, OS commands, insecure deserialization) with zero unit test coverage.",
+      "file": "test_heavy.py",
+      "line": 17,
+      "suggestion": "Add test cases covering input handling and validation for `process_user_input`.",
+      "confidence": 0.85,
+      "rule_id": "AI_T-AI-001"
+    },
+    {
+      "agent": "ai_test",
+      "severity": "critical",
+      "category": "Missing Error Handling Tests",
+      "message": "The function `process_order_and_charge` handles payment exceptions internally by printing and returning None, but no tests verify this failure path.",
+      "file": "test_heavy.py",
+      "line": 52,
+      "suggestion": "Write a test case that mocks `charge_payment` to raise an exception and asserts that `process_order_and_charge` safely returns None.",
+      "confidence": 0.85,
+      "rule_id": "AI_T-AI-001"
+    },
+    {
+      "agent": "ai_test",
+      "severity": "high",
+      "category": "Missing Edge Cases",
+      "message": "Boundary value and edge case handling for `process_order_and_charge` (such as negative or zero amounts, missing user_id or payment method) lacks explicit test coverage.",
+      "file": "test_heavy.py",
+      "line": 23,
+      "suggestion": "Add tests for zero/negative amounts, empty user IDs, and missing payment methods.",
+      "confidence": 0.85,
+      "rule_id": "AI_T-AI-001"
+    },
+    {
+      "agent": "ai_test",
+      "severity": "medium",
+      "category": "Untested Public APIs",
+      "message": "The function `get_user` lacks any tests to verify its return values or behavior under different inputs.",
+      "file": "test_heavy.py",
+      "line": 124,
+      "suggestion": "Add a unit test verifying `get_user` returns None or expected user structures.",
+      "confidence": 0.85,
+      "rule_id": "AI_T-AI-001"
+    },
+    {
+      "agent": "ai_architecture",
+      "severity": "critical",
+      "category": "God Functions",
+      "message": "process_order_and_charge violates the Single Responsibility Principle by handling validation, order retrieval, coupon calculation, shipping, billing, payment processing, persistence, email notifications, inventory updates, and logging in a single function.",
+      "file": "test_heavy.py",
+      "line": 25,
+      "suggestion": "Decompose the god function into a workflow orchestrator and distinct service classes (e.g., PaymentService, OrderService, InventoryService, NotificationService).",
+      "confidence": 0.85,
+      "rule_id": "AI_A-AI-001"
+    },
+    {
+      "agent": "ai_architecture",
+      "severity": "high",
+      "category": "Scalability Concerns",
+      "message": "get_all_orders is used inside a loop or to filter in-memory collections, loading an unbounded dataset which will degrade performance as the system grows.",
+      "file": "test_heavy.py",
+      "line": 40,
+      "suggestion": "Replace in-memory filtering of all orders with a targeted database query filtered by user_id.",
+      "confidence": 0.85,
+      "rule_id": "AI_A-AI-001"
+    },
+    {
+      "agent": "ai_architecture",
+      "severity": "medium",
+      "category": "Poor Modularity",
+      "message": "Authentication logic, payment processing, database persistence, and shipping calculations are tightly bound within a single monolithic module.",
+      "file": "test_heavy.py",
+      "line": 1,
+      "suggestion": "Split the module into domain-driven boundaries such as payments/, orders/, shipping/, and notifications/.",
+      "confidence": 0.85,
+      "rule_id": "AI_A-AI-001"
+    },
+    {
+      "agent": "ai_architecture",
+      "severity": "medium",
+      "category": "Hidden Dependencies",
+      "message": "Global hardcoded secrets and unmanaged state reside at the module level, creating hidden side effects and tight coupling.",
+      "file": "test_heavy.py",
+      "line": 10,
+      "suggestion": "Inject configuration and secrets via environment variables using a centralized Config class or dependency injection container.",
+      "confidence": 0.85,
+      "rule_id": "AI_A-AI-001"
+    },
+    {
+      "agent": "ai_performance",
+      "severity": "critical",
+      "category": "Inefficient algorithms / N+1 pattern",
+      "message": "Fetching all orders into memory via get_all_orders() and filtering linearly in Python creates an O(N) memory and CPU bottleneck that will scale terribly.",
+      "file": "test_heavy.py",
+      "line": 39,
+      "suggestion": "Replace the local iteration over all orders with a targeted database query filtered by user_id.",
+      "confidence": 0.85,
+      "rule_id": "AI_P-AI-001"
+    }
+  ]
+}

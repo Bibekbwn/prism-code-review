@@ -1,159 +1,166 @@
-﻿"""Security Agent - Checks for secrets, dangerous patterns, and CVEs."""
+"""
+Security Agent - Scans for hardcoded secrets, dangerous patterns,
+insecure dependencies, and common vulnerability signatures.
+
+Rule IDs follow SonarQube convention: SECU-XXX
+"""
 
 import re
 from typing import List
 from prism.agents import BaseAgent, Finding, Severity, Blocker, register_agent
 
 
-def _strip_comments(content: str, file_path: str) -> str:
-    """Remove comments from code to avoid false positives in comments.
-    
-    Only strips comments — preserves string literals so that
-    actual secrets inside strings are still detected.
-    """
-    lines = content.split("\n")
-    result = []
-    
-    for line in lines:
-        if file_path.endswith(".py"):
-            # Remove # comments (but not inside strings)
-            in_string = False
-            string_char = None
-            cleaned = []
-            i = 0
-            while i < len(line):
-                ch = line[i]
-                if not in_string and ch in ('"', "'"):
-                    in_string = True
-                    string_char = ch
-                    cleaned.append(ch)
-                elif in_string and ch == string_char:
-                    in_string = False
-                    cleaned.append(ch)
-                elif in_string:
-                    cleaned.append(ch)
-                elif ch == "#":
-                    break  # rest of line is comment
-                else:
-                    cleaned.append(ch)
-                i += 1
-            result.append("".join(cleaned))
-        elif file_path.endswith((".js", ".ts", ".jsx", ".tsx")):
-            in_string = False
-            string_char = None
-            in_block_comment = False
-            cleaned = []
-            i = 0
-            while i < len(line):
-                ch = line[i]
-                next_ch = line[i + 1] if i + 1 < len(line) else ""
-                
-                if in_block_comment:
-                    if ch == "*" and next_ch == "/":
-                        in_block_comment = False
-                        i += 2
-                        continue
-                    cleaned.append(" ")
-                    i += 1
-                    continue
-                
-                if not in_string and ch == "/" and next_ch == "/":
-                    break  # rest of line is comment
-                if not in_string and ch == "/" and next_ch == "*":
-                    in_block_comment = True
-                    i += 2
-                    continue
-                
-                if not in_string and ch in ('"', "'", "`"):
-                    in_string = True
-                    string_char = ch
-                    cleaned.append(ch)
-                elif in_string and ch == string_char:
-                    in_string = False
-                    cleaned.append(ch)
-                elif in_string:
-                    cleaned.append(ch)
-                else:
-                    cleaned.append(ch)
-                i += 1
-            result.append("".join(cleaned))
-        else:
-            result.append(line)
-    
-    return "\n".join(result)
-
-
 SECRET_PATTERNS = [
-    (r'(?i)(api[_-]?key|apikey)\s*[:=]\s*["\']([A-Za-z0-9_\-]{16,})["\']', "API Key", "SECU-101", "Use os.environ.get('API_KEY') instead"),
-    (r'(?i)(secret[_-]?key|secretkey)\s*[:=]\s*["\']([A-Za-z0-9_\-]{16,})["\']', "Secret Key", "SECU-102", "Use os.environ.get('SECRET_KEY') instead"),
-    (r'(?i)(?:^|\s)(?:password|passwd|pwd)\s*[:=]\s*["\']([^\s\'\"\n]{8,})["\']', "Password", "SECU-103", "Use os.environ.get('PASSWORD') instead"),
-    (r'(?i)(token|access_token)\s*[:=]\s*["\']([A-Za-z0-9_\-\.]{20,})["\']', "Auth Token", "SECU-104", "Use os.environ.get('TOKEN') instead"),
-    (r'AKIA[0-9A-Z]{16}', "AWS Access Key ID", "SECU-105", "Use boto3.session.Session() with IAM role"),
-    (r'(?i)(github|gitlab)_token\s*[:=]\s*["\']([A-Za-z0-9_\-]{20,})["\']', "Git Token", "SECU-106", "Use os.environ.get('GITHUB_TOKEN') instead"),
-    (r'(?i)(private_key|privatekey)\s*[:=]\s*["\']([^\s\'\"\n]{20,})["\']', "Private Key", "SECU-107", "Use os.environ.get('PRIVATE_KEY') instead"),
-    (r'(?i)(mysql|postgres|mongodb)://[^\s\'\"<>]+', "Database Connection String", "SECU-108", "Use environment variable for DB URL"),
+    (r'(?i)(api[_-]?key|apikey)\s*[:=]\s*["\']([A-Za-z0-9_\-]{16,})["\']', "API Key", "SECU-101"),
+    (r'(?i)(secret[_-]?key|secretkey)\s*[:=]\s*["\']([A-Za-z0-9_\-]{16,})["\']', "Secret Key", "SECU-102"),
+    (r'(?i)^(?:\s*)(?:password|passwd|pwd)\s*[:=]\s*["\']([^\s\'\"\n]{8,})["\']', "Password", "SECU-103"),
+    (r'(?i)(token|access_token)\s*[:=]\s*["\']([A-Za-z0-9_\-\.]{20,})["\']', "Auth Token", "SECU-104"),
+    (r'AKIA[0-9A-Z]{16}', "AWS Access Key ID", "SECU-105"),
+    (r'(?i)(github|gitlab)_token\s*[:=]\s*["\']([A-Za-z0-9_\-]{20,})["\']', "Git Token", "SECU-106"),
+    (r'(?i)(private_key|privatekey)\s*[:=]\s*["\']([^\s\'\"\n]{20,})["\']', "Private Key", "SECU-107"),
+    (r'(?i)(mysql|postgres|mongodb)://[^\s\'\"<>]+', "Database Connection String", "SECU-108"),
+    # --- Gitleaks-style provider-specific secrets (researched from gitleaks, trufflehog, detect-secrets) ---
+    (r'(?i)slack[_-]?token\s*[:=]\s*["\']([xox[baprs]-[A-Za-z0-9\-]{10,})["\']', "Slack Token", "SECU-109"),
+    (r'(?i)slack[_-]?webhook\s*[:=]\s*["\'](https://hooks\.slack\.com/services/[A-Za-z0-9/]+)["\']', "Slack Webhook URL", "SECU-110"),
+    (r'(?i)(sk|pk)_(live|test)_[A-Za-z0-9]{24,}', "Stripe Key", "SECU-111"),
+    (r'(?i)twilio[_-]?(auth[_-]?token|sid)\s*[:=]\s*["\']([A-Za-z0-9]{20,})["\']', "Twilio Credential", "SECU-112"),
+    (r'(?i)sendgrid[_-]?api[_-]?key\s*[:=]\s*["\']([A-Za-z0-9_\-\.]{20,})["\']', "SendGrid API Key", "SECU-113"),
+    (r'(?i)(google[_-]?api[_-]?key|gcp[_-]?key)\s*[:=]\s*["\']([A-Za-z0-9_\-]{20,})["\']', "Google API Key", "SECU-114"),
+    (r'AIza[0-9A-Za-z_\-]{35}', "Google API Key (literal)", "SECU-115"),
+    (r'-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----', "PEM Private Key Block", "SECU-116"),
+    (r'(?i)jwt[_-]?secret\s*[:=]\s*["\']([^\s\'\"\n]{8,})["\']', "JWT Secret", "SECU-117"),
+    (r'(?i)(npm[_-]?token|npm[_-]?access[_-]?token)\s*[:=]\s*["\']([A-Za-z0-9_\-]{20,})["\']', "npm Token", "SECU-118"),
+    (r'(?i)(heroku|digitalocean)[_-]?(api[_-]?key|token)\s*[:=]\s*["\']([A-Za-z0-9_\-]{20,})["\']', "Cloud Provider Token", "SECU-119"),
+    (r'(?i)(auth[_-]?token|authtoken)\s*[:=]\s*["\']([A-Za-z0-9_\-\.]{16,})["\']', "Auth Token (generic)", "SECU-120"),
+    (r'(?i)(client[_-]?secret)\s*[:=]\s*["\']([^\s\'\"\n]{16,})["\']', "Client Secret", "SECU-121"),
+    (r'(?i)(access[_-]?key[_-]?id)\s*[:=]\s*["\']([A-Za-z0-9]{16,})["\']', "Access Key ID", "SECU-122"),
+]
+
+# Gitleaks-style false-positive filtering, split into two tiers:
+#   SECRET_VALUE_ALLOWLIST  — obvious placeholders inside the secret itself
+#                            (e.g. "xxx", "changeme", "your_key_here").
+#                            Kept narrow on purpose so real-looking keys like
+#                            AKIAIOSFODNN7EXAMPLE still get flagged.
+#   SECRET_LINE_ALLOWLIST  — the surrounding line reads like a test fixture,
+#                            env-var lookup, or config template.
+SECRET_VALUE_ALLOWLIST = [
+    r'(?i)xxx|yyy|zzz|changeme|placeholder|your[_-]?key|dummy[_-]?key|sample[_-]?key',
+    r'(?i)<your[_-]?[^>]*>|<insert[^>]*>',
+    r'\{\{[^}]*\}\}',
+]
+
+SECRET_LINE_ALLOWLIST = [
+    r'(?i)test[_-]?key|mock[_-]?key|fake[_-]?key|dev[_-]?key',
+    r'(?i)os\.getenv|os\.environ|process\.env|import\.env',
+    r'\.env\b|\.env\.example|\.env\.template',
+    r'(?i)redacted|sanitized|scrubbed',
 ]
 
 DANGEROUS_PATTERNS = [
-    (r"\beval\s*\(", "Use of eval() - code injection risk", "SECU-201", "Use ast.literal_eval() for safe parsing"),
-    (r"\bexec\s*\(", "Use of exec() - code injection risk", "SECU-202", "Avoid dynamic code execution"),
-    (r"subprocess\.(call|run|Popen)\s*\([^)]*-shell\s*=\s*True", "Shell=True in subprocess - command injection risk", "SECU-203", "Use shell=False with argument list"),
-    (r"os\.system\s*\(", "Use of os.system() - command injection risk", "SECU-204", "Use subprocess.run() with shell=False"),
-    (r"pickle\.loads?\s*\(", "Use of pickle - deserialization risk", "SECU-205", "Use JSON or a safe serializer"),
-    (r"yaml\.load\s*\(", "Use of yaml.load() without SafeLoader - deserialization risk", "SECU-206", "Use yaml.safe_load() instead"),
-    (r"SELECT\s+.+\s+FROM\s+.+\s+WHERE\s+.+\s*=\s*['\"].*\+", "SQL injection - string concatenation in query", "SECU-207", "Use parameterized queries with placeholders"),
-    (r"document\.getElementById\([^)]*\)\.innerHTML\s*=", "XSS - innerHTML assignment", "SECU-208", "Use textContent or sanitize input"),
-    (r"\.\w+\s*\+\s*['\"]", "Potential XSS - string concatenation in HTML", "SECU-209", "Use template literals with sanitization"),
+    (r"\beval\s*\(", "Use of eval() - code injection risk", "SECU-201"),
+    (r"\bexec\s*\(", "Use of exec() - code injection risk", "SECU-202"),
+    (r"subprocess\.(call|run|Popen)\s*\([^)]*-shell\s*=\s*True", "Shell=True in subprocess - command injection risk", "SECU-203"),
+    (r"os\.system\s*\(", "Use of os.system() - command injection risk", "SECU-204"),
+    (r"pickle\.loads?\s*\(", "Use of pickle - deserialization risk", "SECU-205"),
+    (r"yaml\.load\s*\(", "Use of yaml.load() without SafeLoader - deserialization risk", "SECU-206"),
+    (r"yaml\.load\s*\([^)]*Loader\s*=\s*c\.SafeLoader", "yaml.load with SafeLoader (safe, no finding)", "SECU-206-SAFE"),
+    (r"SELECT\s+.+\s+FROM\s+.+\s+WHERE\s+.+\s*=\s*['\"].*\+", "SQL injection - string concatenation in query", "SECU-207"),
+    (r"document\.getElementById\([^)]*\)\.innerHTML\s*=", "XSS - innerHTML assignment", "SECU-208"),
+    (r"\.\w+\s*\+\s*['\"]", "Potential XSS - string concatenation in HTML", "SECU-209"),
+    (r"md5\s*\(", "Use of MD5 - weak hash", "SECU-210"),
+    (r"\bsha1\s*\(", "Use of SHA1 - weak hash", "SECU-211"),
+    (r"random\.random\(\)\s*\)?\s*==|random\.randint\(\s*0\s*,", "Insecure randomness (not crypto-safe)", "SECU-212"),
+    (r"requests\.(get|post|put|delete)\s*\([^)]*verify\s*=\s*False", "TLS verification disabled", "SECU-213"),
+    (r"chmod\s+777|os\.chmod\([^)]*0o?777", "Overly permissive file permissions (777)", "SECU-214"),
+    (r"harvest|harvesting|harvested", "Possible data exfiltration keyword", "SECU-215"),
 ]
+
+INSECURE_DEPENDENCIES = {
+    "lodash": ("Use lodash-es or individual packages", "SECU-301"),
+    "moment": ("Replace with date-fns or luxon", "SECU-302"),
+    "axios": ("Use fetch or got", "SECU-303"),
+    "request": ("Deprecated - use got or node-fetch", "SECU-304"),
+    "node-uuid": ("Replace with crypto.randomUUID()", "SECU-305"),
+    "uuid": ("Use crypto.randomUUID() instead", "SECU-306"),
+    "request-promise": ("Use native fetch or got", "SECU-307"),
+    "body-parser": ("Use express.json() directly", "SECU-308"),
+    "helmet": ("Outdated - use express-helmet or helmet v5+", "SECU-309"),
+}
 
 
 @register_agent
 class SecurityAgent(BaseAgent):
     name = "security"
-    description = "Detects hardcoded secrets, dangerous patterns, and insecure dependencies"
+    description = "Scans for secrets, dangerous patterns, and vulnerabilities"
 
-    def _check(self, file_path: str, content: str, diff: str) -> List[Finding]:
-        """Run security checks and return list of Findings."""
-        findings = []
-        
-        # Strip comments to avoid false positives
-        # (e.g., detecting "password" in a comment or example)
-        clean_content = _strip_comments(content, file_path)
+    def _check(self, file_path: str, content: str, diff: str,
+               skeleton: str = "", line_count: int = None,
+               fast: bool = False) -> List[Finding]:
+        findings: List[Finding] = []
+        lines = content.split("\n")
+        current_file = file_path
 
-        for pattern, secret_type, rule_id, suggestion in SECRET_PATTERNS:
-            for match in re.finditer(pattern, clean_content, re.MULTILINE):
-                line_num = clean_content[:match.start()].count("\n") + 1
+        for i, line in enumerate(lines, 1):
+            for pattern, label, rule_id in SECRET_PATTERNS:
+                match = re.search(pattern, line, re.IGNORECASE)
+                if not match:
+                    continue
+                # Gitleaks-style two-tier false-positive filtering.
+                # Tier 1 (value): obvious placeholders inside the secret itself
+                #   — kept narrow so real-looking keys (e.g. AKIAIOSFODNN7EXAMPLE)
+                #     still get flagged.
+                # Tier 2 (line): the surrounding line reads like a test fixture,
+                #   env-var lookup, or config template.
+                captured = match.group(match.lastindex) if match.lastindex else ""
+                if any(re.search(v, captured, re.IGNORECASE)
+                       for v in SECRET_VALUE_ALLOWLIST):
+                    continue
+                if any(re.search(a, line, re.IGNORECASE)
+                       for a in SECRET_LINE_ALLOWLIST):
+                    continue
                 findings.append(Finding(
                     agent=self.name,
                     severity=Severity.CRITICAL,
                     category="Secret Exposure",
-                    message="{} detected".format(secret_type),
-                    file=file_path,
-                    line=line_num,
-                    suggestion=suggestion,
-                    suggested_code="import os\n{} = os.environ.get('{}')".format(
-                        secret_type.replace(" ", "_").upper(), secret_type
-                    ),
+                    message="Possible {} detected".format(label.lower()),
+                    file=current_file,
+                    line=i,
+                    suggestion="Remove hardcoded secret. Use environment variables or a secrets manager.",
                     blocker=Blocker.BLOCKS,
-                    confidence=0.95,
+                    confidence=0.85,
                     rule_id=rule_id,
                 ))
 
-        for pattern, message, rule_id, suggestion in DANGEROUS_PATTERNS:
-            for match in re.finditer(pattern, clean_content, re.MULTILINE):
-                line_num = clean_content[:match.start()].count("\n") + 1
-                findings.append(Finding(
-                    agent=self.name,
-                    severity=Severity.HIGH,
-                    category="Dangerous Pattern",
-                    message=message,
-                    file=file_path,
-                    line=line_num,
-                    suggestion=suggestion,
-                    suggested_code="# Replace this dangerous pattern with:\n# {}".format(suggestion),
-                    blocker=Blocker.BLOCKS,
-                    confidence=0.80,
-                    rule_id=rule_id,
-                ))
+            for pattern, label, rule_id in DANGEROUS_PATTERNS:
+                if rule_id == "SECU-206-SAFE":
+                    continue  # positive match, not a finding
+                if re.search(pattern, line, re.IGNORECASE):
+                    findings.append(Finding(
+                        agent=self.name,
+                        severity=Severity.HIGH,
+                        category="Dangerous Pattern",
+                        message=label,
+                        file=current_file,
+                        line=i,
+                        suggestion="Review this pattern for security risks.",
+                        blocker=Blocker.BLOCKS,
+                        confidence=0.80,
+                        rule_id=rule_id,
+                    ))
+
+        if file_path.endswith(("package.json", "requirements.txt", "Cargo.toml", "go.mod")):
+            for dep, (advice, rule_id) in INSECURE_DEPENDENCIES.items():
+                if dep in content:
+                    findings.append(Finding(
+                        agent=self.name,
+                        severity=Severity.MEDIUM,
+                        category="Insecure Dependency",
+                        message="Use of '{}' - {}".format(dep, advice),
+                        file=current_file,
+                        suggestion=advice,
+                        blocker=Blocker.WARNS,
+                        confidence=0.90,
+                        rule_id=rule_id,
+                    ))
 
         return findings

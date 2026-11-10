@@ -1,10 +1,11 @@
 {
   "agents": [
-    "security",
-    "quality",
-    "policy",
-    "test",
-    "ai_reviewer"
+    "ai_security",
+    "ai_quality",
+    "ai_policy",
+    "ai_test",
+    "ai_architecture",
+    "ai_performance"
   ],
   "block_on": [
     "critical",
@@ -15,5 +16,6 @@
     "max_file_length": 500,
     "min_coverage": 0
   },
-  "confidence_threshold": 0.7
+  "confidence_threshold": 0.7,
+  "run_tests": "changed-only"
 }

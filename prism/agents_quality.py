@@ -41,7 +41,9 @@ class QualityAgent(BaseAgent):
     name = "quality"
     description = "Checks code complexity, cleanliness, style, duplication, naming, imports"
 
-    def _check(self, file_path: str, content: str, diff: str) -> List[Finding]:
+    def _check(self, file_path: str, content: str, diff: str,
+               skeleton: str = "", line_count: int = None,
+               fast: bool = False) -> List[Finding]:
         findings: List[Finding] = []
         lines = content.split("\n")
 
@@ -133,8 +135,118 @@ class QualityAgent(BaseAgent):
         findings.extend(_check_duplication(content, file_path))
         findings.extend(_check_naming(content, file_path))
         findings.extend(_check_imports(content, file_path))
+        findings.extend(_check_magic_numbers(content, file_path))
+        findings.extend(_check_missing_docstrings(content, file_path))
+        findings.extend(_check_missing_type_hints(content, file_path))
 
         return findings
+
+
+def _check_magic_numbers(content: str, file_path: str) -> List[Finding]:
+    """Flag hardcoded numeric constants that should be named."""
+    if not file_path.endswith(".py"):
+        return []
+    findings = []
+    lines = content.split("\n")
+    # Allowlist: common numbers that are fine as literals
+    allowed = {"0", "1", "2", "3", "-1", "0.0", "1.0", "100", "1000",
+               "1024", "3600", "60", "300", "8080", "3000", "5000",
+               "0.5", "0.25", "0.8", "0.95", "255", "128", "64", "32",
+               "24", "48", "72", "96", "100", "200", "400", "500", "1000",
+               "0.1", "0.2", "0.3", "0.4", "0.6", "0.7", "0.9"}
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if stripped.startswith(("import ", "from ")):
+            continue
+        # Find numeric literals used as default args or assignments
+        for match in re.finditer(r'(?<![\w.])(\d{2,})(?![\w.])', line):
+            num = match.group(1)
+            if num in allowed:
+                continue
+            findings.append(Finding(
+                agent="quality",
+                severity=Severity.LOW,
+                category="Magic Number",
+                message="Magic number '{}' on line {}".format(num, i + 1),
+                file=file_path,
+                line=i + 1,
+                suggestion="Extract into a named constant for clarity.",
+                blocker=Blocker.WARNS,
+                confidence=0.60,
+                rule_id="QUAL-109",
+            ))
+    return findings
+
+
+def _check_missing_docstrings(content: str, file_path: str) -> List[Finding]:
+    """Flag public functions/classes without docstrings."""
+    if not file_path.endswith(".py"):
+        return []
+    findings = []
+    try:
+        tree = ast.parse(content)
+    except (SyntaxError, ValueError):
+        return findings
+
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name.startswith("_"):
+                continue
+            body = node.body
+            has_docstring = (
+                len(body) > 0 and
+                isinstance(body[0], ast.Expr) and
+                isinstance(body[0].value, (ast.Constant, ast.Str))
+                and isinstance(getattr(body[0].value, 'value', None), str)
+            )
+            if not has_docstring:
+                findings.append(Finding(
+                    agent="quality",
+                    severity=Severity.LOW,
+                    category="Missing Docstring",
+                    message="{} '{}' has no docstring".format(
+                        "Class" if isinstance(node, ast.ClassDef) else "Function",
+                        node.name),
+                    file=file_path,
+                    line=node.lineno,
+                    suggestion="Add a docstring describing purpose, params, and return.",
+                    blocker=Blocker.WARNS,
+                    confidence=0.85,
+                    rule_id="QUAL-110",
+                ))
+    return findings
+
+
+def _check_missing_type_hints(content: str, file_path: str) -> List[Finding]:
+    """Flag public functions without return type annotations."""
+    if not file_path.endswith(".py"):
+        return []
+    findings = []
+    try:
+        tree = ast.parse(content)
+    except (SyntaxError, ValueError):
+        return findings
+
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name.startswith("_"):
+                continue
+            if node.returns is None:
+                findings.append(Finding(
+                    agent="quality",
+                    severity=Severity.LOW,
+                    category="Missing Type Hint",
+                    message="Function '{}' has no return type annotation".format(node.name),
+                    file=file_path,
+                    line=node.lineno,
+                    suggestion="Add a return type annotation.",
+                    blocker=Blocker.WARNS,
+                    confidence=0.75,
+                    rule_id="QUAL-111",
+                ))
+    return findings
 
 
 def _check_duplication(content: str, file_path: str) -> List[Finding]:
@@ -221,9 +333,10 @@ def _check_imports(content: str, file_path: str) -> List[Finding]:
     findings = []
     lines = content.split("\n")
 
-    # Strip comments only — preserve strings to avoid false positives
+    # Strip comments and strings to avoid false positives
     code_lines = []
     for line in lines:
+        # Remove inline comments
         in_string = False
         string_char = None
         cleaned = []
@@ -233,12 +346,12 @@ def _check_imports(content: str, file_path: str) -> List[Finding]:
             if not in_string and ch in ('"', "'"):
                 in_string = True
                 string_char = ch
-                cleaned.append(ch)
+                cleaned.append(" ")
             elif in_string and ch == string_char:
                 in_string = False
-                cleaned.append(ch)
+                cleaned.append(" ")
             elif in_string:
-                cleaned.append(ch)
+                cleaned.append(" ")
             elif ch == "#":
                 break  # rest of line is comment
             else:
@@ -259,13 +372,8 @@ def _check_imports(content: str, file_path: str) -> List[Finding]:
             match = re.match(r'^import (\w+)', imp_line)
             if match:
                 module = match.group(1)
-                # Check for module usage as standalone word OR as module.something
-                usage_pattern = re.compile(r'\b' + re.escape(module) + r'\b')
-                usage_count = len(usage_pattern.findall(code_content))
-                # Also check for module.something usage
-                dotted_usage = code_content.count(module + ".")
-                total_usage = usage_count + dotted_usage
-                if total_usage <= 1:
+                usage_count = code_content.count(module)
+                if usage_count <= 1:
                     findings.append(Finding(
                         agent="quality",
                         severity=Severity.LOW,
@@ -298,9 +406,7 @@ def _check_imports(content: str, file_path: str) -> List[Finding]:
                     # Check if any imported name is used in code
                     any_used = False
                     for name in imported_names:
-                        usage_pattern = re.compile(r'\b' + re.escape(name) + r'\b')
-                        usage_count = len(usage_pattern.findall(code_content))
-                        if usage_count > 1:
+                        if code_content.count(name) > 1:
                             any_used = True
                             break
                     if not any_used and imported_names:

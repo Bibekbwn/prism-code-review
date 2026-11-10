@@ -149,12 +149,29 @@ def get_findings_history() -> dict:
     return trends
 
 
-def clear_reports():
-    """Delete all reports."""
+def delete_report(report_id: str) -> bool:
+    """Delete a specific report by ID. Returns True if deleted, False if not found."""
+    report_path = os.path.join(REPORTS_DIR, f"{report_id}.json")
+    if os.path.exists(report_path):
+        os.remove(report_path)
+        # Update index
+        index = load_index()
+        index["reports"] = [r for r in index["reports"] if r["id"] != report_id]
+        with open(REPORT_INDEX, "w") as f:
+            json.dump(index, f, indent=2)
+        return True
+    return False
+
+
+def clear_reports() -> int:
+    """Delete all reports. Returns the number of reports deleted."""
+    if not os.path.exists(REPORTS_DIR):
+        return 0
     import shutil
-    if os.path.exists(REPORTS_DIR):
-        shutil.rmtree(REPORTS_DIR)
-    return True
+    # Count files before deleting
+    count = len([f for f in os.listdir(REPORTS_DIR) if f.endswith(".json")])
+    shutil.rmtree(REPORTS_DIR)
+    return count
 
 
 def get_report_summary() -> str:

@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -20,6 +20,17 @@ h1 { font-size: 28px; margin-bottom: 20px; color: #38bdf8; }
 .report-date { font-size: 13px; color: #94a3b8; }
 .report-files { font-size: 14px; margin: 8px 0; }
 .report-risk { font-size: 18px; font-weight: bold; }
+.severity-bar { height: 8px; border-radius: 4px; margin: 8px 0; display: flex; gap: 2px; }
+.severity-bar div { height: 100%; border-radius: 4px; }
+.sev-critical { background: #ef4444; }
+.sev-high { background: #f97316; }
+.sev-medium { background: #eab308; }
+.sev-low { background: #22c55e; }
+.finding-item { padding: 8px 0; border-bottom: 1px solid #334155; font-size: 13px; }
+.finding-item:last-child { border-bottom: none; }
+.finding-severity { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-right: 8px; }
+.tag-block { background: #ef4444; color: #fff; }
+.tag-warn { background: #eab308; color: #000; }
 </style>
 </head>
 <body>

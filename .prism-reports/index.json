@@ -1,15 +1,28 @@
 {
   "reports": [
     {
-      "id": "20261107T133240Z",
-      "timestamp": "2026-11-07T13:32:40.349082+00:00",
-      "commit_hash": "HEAD",
-      "branch": "HEAD",
+      "id": "20261109T075911Z",
+      "timestamp": "2026-11-09T07:59:11.315708+00:00",
+      "commit_hash": "55e569521c6da0a8fc9ff5500ea5bef683295112",
+      "branch": "main",
       "files_reviewed": [
-        "test_bad.py"
+        "test_heavy.py"
       ],
-      "total_findings": 4,
-      "blocking": 2,
+      "total_findings": 0,
+      "blocking": 0,
+      "risk_score": 0.0,
+      "commit_allowed": true
+    },
+    {
+      "id": "20261109T080015Z",
+      "timestamp": "2026-11-09T08:00:15.481679+00:00",
+      "commit_hash": "55e569521c6da0a8fc9ff5500ea5bef683295112",
+      "branch": "main",
+      "files_reviewed": [
+        "test_heavy.py"
+      ],
+      "total_findings": 26,
+      "blocking": 19,
       "risk_score": 0.0,
       "commit_allowed": false
     }

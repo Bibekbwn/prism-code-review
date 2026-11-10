@@ -56,10 +56,12 @@ class BaseAgent:
     name: str = "base"
     description: str = "Base agent"
 
-    def review(self, file_path: str, content: str, diff: str) -> AgentResult:
+    def review(self, file_path: str, content: str, diff: str,
+               skeleton: str = "", line_count: int = None,
+               fast: bool = False) -> AgentResult:
         import time
         start = time.time()
-        findings = self._check(file_path, content, diff)
+        findings = self._check(file_path, content, diff, skeleton, line_count, fast)
         duration = (time.time() - start) * 1000
         blocking = any(f.blocker == Blocker.BLOCKS for f in findings)
         return AgentResult(
@@ -69,7 +71,9 @@ class BaseAgent:
             duration_ms=duration,
         )
 
-    def _check(self, file_path: str, content: str, diff: str) -> List[Finding]:
+    def _check(self, file_path: str, content: str, diff: str,
+               skeleton: str = "", line_count: int = None,
+               fast: bool = False) -> List[Finding]:
         raise NotImplementedError
 
 
@@ -89,14 +93,16 @@ def list_agents() -> List[str]:
     return list(AGENT_REGISTRY.keys())
 
 
-def run_pipeline(agents: List[str], file_path: str, content: str, diff: str) -> List[AgentResult]:
+def run_pipeline(agents: List[str], file_path: str, content: str,
+                 diff: str, skeleton: str = "",
+                 line_count: int = None, fast: bool = False) -> List[AgentResult]:
     results = []
     for agent_name in agents:
         agent = get_agent(agent_name)
         if agent is None:
             logger.warning("Agent %s not found, skipping", agent_name)
             continue
-        result = agent.review(file_path, content, diff)
+        result = agent.review(file_path, content, diff, skeleton, line_count, fast)
         results.append(result)
     return results
 

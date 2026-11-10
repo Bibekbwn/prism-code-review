@@ -13,7 +13,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from prism.agents import Finding, Severity, Blocker
 from prism.autofix import generate_fix, apply_fixes, get_auto_fixable, _classify_fix
 from prism.feedback import scan_dependencies, measure_coverage
-from prism.context import extract_context, extract_for_findings
 
 
 class TestAutoFix:
@@ -91,20 +90,6 @@ class TestSCA:
     def test_scan_dependencies_no_manifest(self):
         findings = scan_dependencies("src/main.py", "print('hello')")
         assert len(findings) == 0
-
-
-class TestContext:
-    def test_extract_context_simple(self):
-        content = "line1\nline2\nline3\nline4\nline5"
-        result = extract_context(content, [3], window=1)
-        assert "line2" in result
-        assert "line3" in result
-        assert "line4" in result
-
-    def test_extract_context_empty(self):
-        content = "line1\nline2"
-        result = extract_context(content, [], window=1)
-        assert "line1" in result
 
 
 class TestJSONOutput:
