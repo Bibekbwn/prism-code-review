@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import shutil
 import sys
 import subprocess
 import concurrent.futures
@@ -12,11 +13,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Load .env file if it exists (for GEMINI_API_KEY and other settings)
 try:
     from dotenv import load_dotenv
-    # Try multiple locations for .env
+    # Try multiple locations for .env (repo-root .env, then .config/.env)
     for env_path in [
         Path(__file__).parent.parent.parent / ".env",
         Path(__file__).parent.parent / ".env",
+        Path(__file__).parent.parent / ".config" / ".env",
         Path.cwd() / ".env",
+        Path.cwd() / ".config" / ".env",
     ]:
         if env_path.exists():
             load_dotenv(env_path)
@@ -28,6 +31,9 @@ from prism.agents import (
     AGENT_REGISTRY, Finding, Severity, Blocker, run_pipeline,
     risk_score, quality_gates_met,
 )
+# Importing these modules runs their @register_agent decorators so the
+# deterministic regex agents are available alongside the AI agents.
+from prism import agents_security, agents_quality, agents_policy, agents_test
 from prism.ai_common import build_skeleton
 from prism.ai_security import AISecurityAgent
 from prism.ai_quality import AIQualityAgent
@@ -44,7 +50,9 @@ from prism.codebase_cache import (
     get_cache_stats, clear_cache,
 )
 
-DEFAULT_AGENTS = ['ai_security', 'ai_quality', 'ai_policy', 'ai_test', 'ai_architecture', 'ai_performance']
+DEFAULT_AGENTS = ['security', 'quality', 'policy', 'test',
+                  'ai_security', 'ai_quality', 'ai_policy', 'ai_test',
+                  'ai_architecture', 'ai_performance']
 CONFIDENCE_THRESHOLD = 0.7
 
 
@@ -163,6 +171,9 @@ def review_file(file_path, config, effort='balanced', fast=False, diff=""):
     skeleton = build_skeleton(file_path, content)
     line_count = content.count("\n") + 1
     agents = list(config.get('agents', DEFAULT_AGENTS))
+    # `lite` effort is for IDE/LSP use: deterministic agents only, no API calls.
+    if effort == 'lite':
+        agents = [a for a in agents if not a.startswith('ai_')]
     results = run_pipeline(agents, file_path, content, diff, skeleton,
                            line_count=line_count, fast=fast)
 
@@ -429,7 +440,7 @@ def _run_self_tests(quick=False):
         from prism.ai_common import (
             build_skeleton, chunk_content, get_tier_for_file,
             review_with_agent, verify_findings, build_import_graph,
-            get_cross_file_context, parse_findings, call_gemini,
+            get_cross_file_context, parse_findings, call_fn,
             API_TIMEOUT, MAX_CONTENT_CHARS
         )
         check("imports", True)
@@ -483,8 +494,10 @@ def _run_self_tests(quick=False):
     for mod_name in [
         'prism.ai_security', 'prism.ai_quality', 'prism.ai_policy',
         'prism.ai_test', 'prism.ai_architecture', 'prism.ai_performance',
+        'prism.ai_providers', 'prism.ai_findings', 'prism.ai_graph',
+        'prism.ai_pipeline',
         'prism.agents_security', 'prism.agents_quality',
-        'prism.agents_policy', 'prism.agents_test', 'prism.agents_ai',
+        'prism.agents_policy', 'prism.agents_test',
     ]:
         importlib.import_module(mod_name)
     check("10+ agents registered", len(AGENT_REGISTRY) >= 10)
@@ -784,6 +797,15 @@ EXAMPLES:
         with open('prism.json', 'w') as f:
             json.dump(config, f, indent=2)
         print('Created prism.json')
+
+        # Scaffold .env from .env.example so the dev just adds their key
+        if not Path('.env').exists() and Path('.env.example').exists():
+            shutil.copy('.env.example', '.env')
+            print('Created .env from .env.example — edit it and add your API key')
+        elif not Path('.env').exists():
+            print('No .env.example found — create .env with GEMINI_API_KEY=your_key')
+        else:
+            print('.env already exists')
         return
 
     if args.command == 'install-hook':

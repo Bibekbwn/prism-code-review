@@ -34,27 +34,6 @@ git commit
           └─→ Posts PR comments + status checks
 ```
 
-## Quick Start
-
-```bash
-# 1. Install
-pip install -e .
-
-# 2. Configure your API key
-cp .env.example .env
-# Edit .env: GEMINI_API_KEY=your_key_here
-
-# 3. Install the pre-commit hook
-prism install-hook
-
-# 4. Commit — PRISM reviews automatically
-git add . && git commit -m "my change"
-
-# 5. IDE integration (inline findings as you type)
-prism lsp
-# See README "IDE Integration" section for editor config
-```
-
 ## IDE Integration
 
 PRISM speaks the Language Server Protocol (LSP) — any editor with LSP support shows findings inline.
@@ -89,13 +68,9 @@ The LSP server has zero external dependencies — it uses only the Python standa
 
 | Component | Technology |
 |-----------|-----------|
-| CLI | Python 3.13+, argparse, dataclasses |
-| AI | Google Gemini (gemini-3.5-flash-lite) |
-| Backend | FastAPI + Uvicorn |
-| Database | Supabase (PostgreSQL) |
-| Queue | Celery + Redis |
-| Metrics | Prometheus |
-| Auth | JWT + bcrypt |
+| CLI | Python 3.10+, argparse, dataclasses |
+| AI | Gemini / Claude / OpenAI (switch via `MODEL_PROVIDER`) |
+| IDE | LSP server (zero external deps, stdlib only) |
 | CI/CD | GitHub Actions |
 
 ## AI Agents
@@ -143,46 +118,38 @@ prism dashboard
 
 ```
 hackathon/
-├── backend/              # FastAPI API server
-│   ├── app/
-│   │   ├── __init__.py
-│   │   ├── main.py        # FastAPI server, GitHub webhook
-│   │   ├── reviewer.py    # Gemini AI code review
-│   │   ├── security.py    # Secret scanning, webhook HMAC
-│   │   ├── auth.py        # JWT auth, RBAC
-│   │   ├── github_app.py  # GitHub App JWT + installation tokens
-│   │   ├── billing.py     # Subscription limits
-│   │   ├── metrics.py     # Prometheus metrics
-│   │   ├── tasks.py       # Celery async task queue
-│   │   ├── middleware.py  # Middleware registration
-│   │   └── rate_limit.py  # Rate limiting
-│   ├── Dockerfile
-│   ├── render.yaml
-│   ├── requirements.txt
-│   ├── .env               # YOUR PRIVATE KEYS GO HERE
-│   └── .env.example
-├── prism/                # Pre-commit code review CLI
+├── prism/                    # Pre-commit code review CLI
 │   ├── __init__.py
-│   ├── agents.py          # BaseAgent, Finding, risk_score, quality_gates
-│   ├── agents_security.py # Secrets, dangerous patterns (SECU-XXX)
-│   ├── agents_quality.py  # Complexity, duplication, naming, imports (QUAL-XXX)
-│   ├── agents_policy.py   # Copyright headers, banned patterns (POL-XXX)
-│   ├── agents_test.py     # Test coverage, docstrings (TST-XXX)
-│   ├── agents_ai.py       # Gemini AI review + caching + AST context (AIREV-XXX)
-│   ├── context.py         # AST-guided context extraction
-│   ├── autofix.py         # Auto-fix engine (secrets, eval, debugger, print)
-│   ├── feedback.py        # SCA CVE scanning + coverage + feedback loop
-│   ├── logging_config.py  # Structured JSON logging
-│   ├── cli.py             # CLI entry point
-│   ├── setup.py           # Installable package
-│   └── pre-commit-hook.sh # Git hook script
-├── tests/                # 25 unit tests (all passing)
-├── database.sql          # Supabase schema with RLS
-├── docker-compose.yml    # Docker config
-├── prism.json            # PRISM config
-├── .github/workflows/
-│   ├── ci-cd.yml
-│   └── prism-review.yml  # CI/CD integration
+│   ├── agents.py             # BaseAgent, Finding, risk_score, pipeline, config
+│   ├── agents_security.py    # Secrets, dangerous patterns (SECU-XXX)
+│   ├── agents_quality.py     # Complexity, duplication, naming, imports (QUAL-XXX)
+│   ├── agents_policy.py      # Copyright headers, banned patterns (POL-XXX)
+│   ├── agents_test.py        # Test coverage, docstrings (TST-XXX)
+│   ├── ai_providers.py       # Gemini/Claude/OpenAI client + retry logic
+│   ├── ai_findings.py        # JSON parsing, finding verification, cross-check
+│   ├── ai_graph.py           # Function-level call graph + cross-file context
+│   ├── ai_pipeline.py        # Chunking, tiers, two-pass summarization
+│   ├── ai_common.py          # Public API facade (re-exports the modules above)
+│   ├── ai_security.py        # AI security agent (uses review_with_agent)
+│   ├── ai_quality.py         # AI quality agent
+│   ├── ai_policy.py          # AI policy agent
+│   ├── ai_test.py            # AI test agent
+│   ├── ai_architecture.py    # AI architecture agent
+│   ├── ai_performance.py     # AI performance agent
+│   ├── autofix.py            # Auto-fix engine (secrets, eval, debugger, print)
+│   ├── feedback.py           # SCA CVE scanning + coverage + feedback loop
+│   ├── logging_config.py     # Structured JSON logging
+│   ├── cli.py                # CLI entry point
+│   ├── lsp.py                # LSP server (IDE integration, stdlib only)
+│   ├── codebase_cache.py     # Per-commit cache of file hashes + findings
+│   ├── reports.py            # Local JSON report persistence
+│   ├── dashboard.html        # Visual report timeline
+│   ├── setup.py              # Installable package
+│   └── pre-commit-hook.sh    # Git hook script
+├── tests/                    # 33 unit + integration tests (all passing)
+├── prism.json                # PRISM config
+├── .env.example              # Copy to .env and fill in your API key
+├── .gitignore
 └── README.md
 ```
 
@@ -191,38 +158,62 @@ hackathon/
 ### 1. Install PRISM
 
 ```bash
-pip install -e prism/
+pip install -e .
+# For Claude: pip install -e .[claude]
+# For OpenAI: pip install -e .[openai]
+# For both:  pip install -e .[all]
 ```
 
-### 2. Review a File
+### 2. Set up (creates prism.json and .env from .env.example)
 
 ```bash
-prism check backend/app/security.py
-prism check backend/app/security.py --json
-prism check backend/app/security.py --fix
+prism init
+# Edit .env and add your API key
 ```
 
-### 3. Review Staged Changes (Before Commit)
+### 3. Configure your API key
+
+```bash
+# Gemini (default)
+GEMINI_API_KEY=your_key_here
+
+# Or switch provider:
+MODEL_PROVIDER=claude   # needs ANTHROPIC_API_KEY
+MODEL_PROVIDER=openai   # needs OPENAI_API_KEY
+```
+
+### 4. Review a File
+
+```bash
+prism check path/to/file.py
+prism check path/to/file.py --json
+prism check path/to/file.py --fix
+```
+
+`--effort lite` runs only the deterministic regex agents (fast, no API calls).
+`--effort balanced` (default) and `--effort max` also run the AI agents.
+
+### 4. Review Staged Changes (Before Commit)
 
 ```bash
 git add .
 prism check-staged --effort balanced
 ```
 
-### 4. Install Pre-Commit Hook (Automatic on Every Commit)
+### 5. Install Pre-Commit Hook (Automatic on Every Commit)
 
 ```bash
 prism install-hook
 ```
 
-### 5. View Review History
+### 6. View Review History
 
 ```bash
 prism reports
 prism report 20240101T120000Z
 ```
 
-### 6. Run Tests
+### 7. Run Tests
 
 ```bash
 pytest tests/ -v
@@ -262,13 +253,32 @@ pytest tests/ -v
 
 ## Agents
 
+PRISM runs two layers of review. The **deterministic** regex agents run
+unconditionally and are fast (no API calls). The **AI** agents run only
+when an API key is configured.
+
 | Agent | Rule IDs | What It Checks | Blocks? |
 |-------|----------|---------------|---------|
-| security | SECU-XXX | Secrets, eval(), SQL injection, XSS, CVEs | Yes (critical/high) |
-| quality | QUAL-XXX | Complexity, duplication, naming, imports, style | Yes (high complexity) |
-| policy | POL-XXX | Copyright headers, banned patterns, issue refs | Warns |
-| test | TST-XXX | Missing tests, coverage measurement, docstrings | Yes (no tests) |
-| ai_reviewer | AIREV-XXX | Gemini AI semantic review | Depends on severity |
+| security | SECU-XXX | Secrets (22 patterns), eval(), SQL injection, XSS, CVEs | Yes (critical/high) |
+| quality | QUAL-XXX | Complexity, duplication, naming, imports, docstrings, type hints | Yes (high complexity) |
+| policy | POL-XXX | SPDX license headers, branch naming, banned patterns | Warns |
+| test | TST-XXX | Weak assertions, test naming, coverage measurement | Yes (no tests) |
+| ai_security | SECU-AI-XXX | AI semantic review of secrets, injection, auth flaws | Depends on severity |
+| ai_quality | QUAL-AI-XXX | AI semantic review of complexity, duplication, maintainability | Depends on severity |
+| ai_policy | POL-AI-XXX | AI semantic review of documentation, compliance, standards | Depends on severity |
+| ai_test | TST-AI-XXX | AI semantic review of test coverage, edge cases | Depends on severity |
+| ai_architecture | ARC-AI-XXX | AI semantic review of modularity, scalability, abstraction | Depends on severity |
+| ai_performance | PERF-AI-XXX | AI semantic review of bottlenecks, memory, complexity | Depends on severity |
+
+Each AI agent returns findings with:
+- **Problem** - what the issue is
+- **Suggestion** - text explanation
+- **Suggested code** - actual code to fix the issue
+
+AI findings in deterministic categories (secrets, dangerous patterns,
+duplication, file length, todos, naming) are cross-checked against the
+regex agents — if the regex agrees, the finding is confirmed; if not,
+confidence is halved (the CodeRabbit "verification agent" pattern).
 
 ## Score: 8.5/10
 

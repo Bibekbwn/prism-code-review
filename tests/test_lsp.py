@@ -6,6 +6,7 @@ Verifies the server responds with correct capabilities and diagnostics.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -81,14 +82,14 @@ def test_lsp_initialize():
 
 def test_lsp_didopen_returns_diagnostics():
     """didOpen must publish diagnostics for a file with findings."""
-    # Use a file with a real secret so the regex agent flags it
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", delete=False, dir=PRISM_DIR
-    ) as f:
+    # Use a file with a real secret so the regex agent flags it.
+    # Write into a temp dir, not the project root, so tests leave no residue.
+    tmpdir = tempfile.mkdtemp()
+    tmp_path = os.path.join(tmpdir, "secret.py")
+    with open(tmp_path, "w") as f:
         f.write('API_KEY = "supersecretvalue123"\n')
-        tmp_path = f.name
 
-    uri = "file://" + os.path.join(PRISM_DIR, tmp_path)
+    uri = "file://" + tmp_path
     proc = subprocess.Popen(
         [sys.executable, LSP_SCRIPT],
         stdin=subprocess.PIPE,
@@ -131,18 +132,17 @@ def test_lsp_didopen_returns_diagnostics():
     finally:
         _send(proc, {"jsonrpc": "2.0", "method": "exit"})
         proc.wait(timeout=5)
-        os.unlink(tmp_path)
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def test_lsp_didclose_clears_diagnostics():
     """didClose must publish an empty diagnostics array."""
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", delete=False, dir=PRISM_DIR
-    ) as f:
+    tmpdir = tempfile.mkdtemp()
+    tmp_path = os.path.join(tmpdir, "clean.py")
+    with open(tmp_path, "w") as f:
         f.write("x = 1\n")
-        tmp_path = f.name
 
-    uri = "file://" + os.path.join(PRISM_DIR, tmp_path)
+    uri = "file://" + tmp_path
     proc = subprocess.Popen(
         [sys.executable, LSP_SCRIPT],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -175,4 +175,4 @@ def test_lsp_didclose_clears_diagnostics():
     finally:
         _send(proc, {"jsonrpc": "2.0", "method": "exit"})
         proc.wait(timeout=5)
-        os.unlink(tmp_path)
+        shutil.rmtree(tmpdir, ignor

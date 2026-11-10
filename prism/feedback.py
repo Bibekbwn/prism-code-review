@@ -187,6 +187,14 @@ def _version_gte(version: str, min_version: str) -> bool:
     return True
 
 
+import subprocess
+
+# Process-level cache: running pytest twice (collect + execute) on every
+# single file review made the LSP server take 5.6s per file. Coverage is a
+# whole-repo property, not a per-file one, so we cache it for the process.
+_coverage_cache = None
+
+
 def measure_coverage(project_dir: str = ".") -> dict:
     """
     Run tests and measure coverage.
@@ -196,8 +204,9 @@ def measure_coverage(project_dir: str = ".") -> dict:
 
     Returns: {"coverage": 0.0-1.0, "tests_run": int, "tests_passed": int}
     """
-    import subprocess
-    import os
+    global _coverage_cache
+    if _coverage_cache is not None:
+        return _coverage_cache
 
     result = {"coverage": 0.0, "tests_run": 0, "tests_passed": 0}
 
@@ -244,6 +253,9 @@ def measure_coverage(project_dir: str = ".") -> dict:
             result["coverage"] = int(match.group(1)) / 100.0
     except Exception:
         pass
+
+    _coverage_cache = result
+    return result
 
     return result
 

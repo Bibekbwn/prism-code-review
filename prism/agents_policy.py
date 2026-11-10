@@ -45,10 +45,14 @@ class PolicyAgent(BaseAgent):
 
         banned = [
             (r"console\.log\(", "Use structured logging instead of console.log", "POL-201"),
-            (r"print\(", "Use logging module instead of print()", "POL-202"),
             (r"debugger;", "Remove debugger statement", "POL-203"),
             (r"alert\(", "Remove alert() - use proper UI components", "POL-204"),
         ]
+        # print() is legitimate in CLI tools and entry points. Only flag it
+        # in library/module code that has no argparse or __main__ guard.
+        is_cli_entry = bool(
+            re.search(r'argparse|__main__|def main\b', content)
+        )
         for pattern, message, rule_id in banned:
             for i, line in enumerate(lines):
                 if re.search(pattern, line):
@@ -63,6 +67,21 @@ class PolicyAgent(BaseAgent):
                         blocker=Blocker.WARNS,
                         confidence=1.0,
                         rule_id=rule_id,
+                    ))
+        if not is_cli_entry:
+            for i, line in enumerate(lines):
+                if re.search(r'print\(', line):
+                    findings.append(Finding(
+                        agent=self.name,
+                        severity=Severity.LOW,
+                        category="Banned Pattern",
+                        message="Use logging module instead of print()",
+                        file=file_path,
+                        line=i + 1,
+                        suggestion="Use logging module instead of print()",
+                        blocker=Blocker.WARNS,
+                        confidence=1.0,
+                        rule_id="POL-202",
                     ))
 
         for i, line in enumerate(lines):

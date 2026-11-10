@@ -92,6 +92,10 @@ def get_changed_files():
     except Exception:
         return [], [], cache
 
+    # Never cache the cache file itself or report artifacts
+    skip = {CACHE_FILE, "prism.json", ".env", ".env.example"}
+    all_files = [f for f in all_files if os.path.basename(f) not in skip]
+
     changed = []
     unchanged = []
     for f in all_files:
@@ -100,7 +104,10 @@ def get_changed_files():
         if sha is None:
             continue
         cached = cache.get(f, {})
-        if cached.get("sha") == sha and cached.get("findings"):
+        # Check for the "findings" key explicitly — an empty list [] is a
+        # valid cache entry (file reviewed, no findings) but is falsy, so
+        # using `if cached.get("findings")` would never cache clean files.
+        if cached.get("sha") == sha and "findings" in cached:
             unchanged.append(f)
         else:
             changed.append(f)

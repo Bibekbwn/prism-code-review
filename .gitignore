@@ -1,5 +1,6 @@
-.env
+﻿.env
 .env.local
+.config/.env
 venv/
 __pycache__/
 *.pyc
@@ -15,3 +16,7 @@ htmlcov/
 *.pem
 *.key
 *.p12
+.prism-reports/
+.prism-cache.json
+tmp*.py
+

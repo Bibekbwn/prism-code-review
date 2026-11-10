@@ -25,6 +25,32 @@
       "blocking": 19,
       "risk_score": 0.0,
       "commit_allowed": false
+    },
+    {
+      "id": "20261110T140427Z",
+      "timestamp": "2026-11-10T14:04:27.226886+00:00",
+      "commit_hash": "c855ad9c9c622f12d6f5e2269246fdf55b515505",
+      "branch": "main",
+      "files_reviewed": [
+        "prism_demo.py"
+      ],
+      "total_findings": 3,
+      "blocking": 1,
+      "risk_score": 0.0,
+      "commit_allowed": false
+    },
+    {
+      "id": "20261110T141217Z",
+      "timestamp": "2026-11-10T14:12:17.084301+00:00",
+      "commit_hash": "c855ad9c9c622f12d6f5e2269246fdf55b515505",
+      "branch": "main",
+      "files_reviewed": [
+        "prism_smoke.py"
+      ],
+      "total_findings": 3,
+      "blocking": 1,
+      "risk_score": 0.0,
+      "commit_allowed": false
     }
   ]
 }

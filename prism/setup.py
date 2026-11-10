@@ -6,8 +6,17 @@ setup(
     description='Pre-Commit Code Review System - Multi-agent code review before push',
     packages=find_packages(),
     install_requires=[
-        'google-generativeai==0.8.0',
+        'google-generativeai>=0.8.0',
+        'python-dotenv>=1.0.0',
     ],
+    extras_require={
+        'claude': ['anthropic>=0.30.0'],
+        'openai': ['openai>=1.0.0'],
+        'all': [
+            'anthropic>=0.30.0',
+            'openai>=1.0.0',
+        ],
+    },
     entry_points={
         'console_scripts': [
             'prism=prism.cli:main',

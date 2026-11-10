@@ -4,6 +4,8 @@ Code Quality Agent - Checks complexity, cleanliness, and style.
 Rule IDs follow SonarQube convention: QUAL-XXX
 """
 
+import ast
+import os
 import re
 from typing import List
 from prism.agents import BaseAgent, Finding, Severity, Blocker, register_agent
@@ -143,25 +145,41 @@ class QualityAgent(BaseAgent):
 
 
 def _check_magic_numbers(content: str, file_path: str) -> List[Finding]:
-    """Flag hardcoded numeric constants that should be named."""
+    """Flag hardcoded numeric constants used in non-trivial contexts.
+
+    Only flags numbers that appear in comparisons, arithmetic, indexing,
+    or function-call arguments — not bare loop counters like `i = 0`
+    or `x = 1`. This avoids the false-positive storm that pure literal
+    scanning produces (e.g. one 9000-line file producing 8000+ findings).
+    """
     if not file_path.endswith(".py"):
         return []
     findings = []
     lines = content.split("\n")
-    # Allowlist: common numbers that are fine as literals
     allowed = {"0", "1", "2", "3", "-1", "0.0", "1.0", "100", "1000",
                "1024", "3600", "60", "300", "8080", "3000", "5000",
                "0.5", "0.25", "0.8", "0.95", "255", "128", "64", "32",
                "24", "48", "72", "96", "100", "200", "400", "500", "1000",
                "0.1", "0.2", "0.3", "0.4", "0.6", "0.7", "0.9"}
+    # Match a 2+ digit literal that is NOT the sole RHS of a `name =` assignment.
+    # The negative lookahead rejects `foo = 123` and `i += 1` counters.
+    pattern = re.compile(
+        r'(?<![\w.])(\d{2,})(?![\w.])'
+    )
+    assignment_rhs = re.compile(
+        r'^\s*[a-zA-Z_]\w*\s*[:=]\s*$'
+    )
     for i, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith("#"):
             continue
         if stripped.startswith(("import ", "from ")):
             continue
-        # Find numeric literals used as default args or assignments
-        for match in re.finditer(r'(?<![\w.])(\d{2,})(?![\w.])', line):
+        # Skip bare assignment lines where the number is the only RHS value
+        # (loop counters, list seeding). Still check lines with operators.
+        if "=" in line and not any(op in line for op in ("==", "!=", "<=", ">=", "+", "-", "*", "/", "%", "[", "(", ",")):
+            continue
+        for match in pattern.finditer(line):
             num = match.group(1)
             if num in allowed:
                 continue
@@ -250,12 +268,19 @@ def _check_missing_type_hints(content: str, file_path: str) -> List[Finding]:
 
 
 def _check_duplication(content: str, file_path: str) -> List[Finding]:
-    """Detect code duplication (3+ lines repeated)."""
+    """Detect code duplication (4+ lines repeated).
+
+    Capped at 20 findings per file to avoid the false-positive storm that
+    short repeated blocks produce (e.g. a CLI with many `print("  [x] ...")`
+    lines would otherwise generate 100+ findings).
+    """
     findings = []
     lines = [l.strip() for l in content.split("\n") if l.strip()]
     seen = {}
     for i in range(len(lines)):
-        for length in range(3, min(10, len(lines) - i + 1)):
+        if len(findings) >= 20:
+            break
+        for length in range(4, min(8, len(lines) - i + 1)):
             block = "\n".join(lines[i:i + length])
             if block in seen:
                 findings.append(Finding(

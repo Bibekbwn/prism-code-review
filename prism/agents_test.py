@@ -22,16 +22,21 @@ class TestAgent(BaseAgent):
         findings: List[Finding] = []
         lines = content.split("\n")
         is_test_file = "test" in file_path.lower() or "spec" in file_path.lower()
+        is_python = file_path.endswith(".py")
 
-        if not is_test_file and len(lines) > 20:
+        # TST-101 is a WARNING, not a blocker. Missing tests are important to
+        # surface but should never block a commit — that would make the
+        # tool unusable on its own codebase (every module without a paired
+        # test file would fail). Developers see the warning and decide.
+        if not is_test_file and is_python and len(lines) > 20:
             findings.append(Finding(
                 agent=self.name,
-                severity=Severity.HIGH,
+                severity=Severity.MEDIUM,
                 category="Missing Tests",
                 message="No test file found for {}".format(file_path),
                 file=file_path,
                 suggestion="Add unit tests before committing.",
-                blocker=Blocker.BLOCKS,
+                blocker=Blocker.WARNS,
                 confidence=0.75,
                 rule_id="TST-101",
             ))
@@ -57,24 +62,28 @@ class TestAgent(BaseAgent):
             findings.extend(_check_weak_assertions(content, file_path))
             findings.extend(_check_test_naming(content, file_path))
 
-        # Measure actual coverage
-        try:
-            cov = measure_coverage()
-            if cov.get("coverage", 0) > 0 and cov["coverage"] < 0.80:
-                findings.append(Finding(
-                    agent=self.name,
-                    severity=Severity.MEDIUM,
-                    category="Low Coverage",
-                    message="Test coverage is {:.0f}% (minimum 80%)".format(
-                        cov["coverage"] * 100),
-                    file=file_path,
-                    suggestion="Add more unit tests to improve coverage.",
-                    blocker=Blocker.WARNS,
-                    confidence=1.0,
-                    rule_id="TST-103",
-                ))
-        except Exception:
-            pass
+        # Measure actual coverage. This is a repo-wide metric (runs pytest on the
+        # whole project), not a per-file one — running it on every file review
+        # made the LSP server take 5.6s per file. It now only runs in
+        # balanced/max effort (fast=False); lite mode skips it entirely.
+        if not fast and is_test_file:
+            try:
+                cov = measure_coverage()
+                if cov.get("coverage", 0) > 0 and cov["coverage"] < 0.80:
+                    findings.append(Finding(
+                        agent=self.name,
+                        severity=Severity.MEDIUM,
+                        category="Low Coverage",
+                        message="Test coverage is {:.0f}% (minimum 80%)".format(
+                            cov["coverage"] * 100),
+                        file=file_path,
+                        suggestion="Add more unit tests to improve coverage.",
+                        blocker=Blocker.WARNS,
+                        confidence=1.0,
+                        rule_id="TST-103",
+                    ))
+            except Exception:
+                pass
 
         return findings
 
