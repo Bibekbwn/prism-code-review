@@ -39,6 +39,10 @@ from prism.feedback import load_feedback, should_suppress, suppress_summary, sca
 from prism.autofix import generate_fix, apply_fixes, get_auto_fixable
 from prism.logging_config import logger
 from prism.reports import save_report, load_report
+from prism.codebase_cache import (
+    get_cached_findings, get_changed_files, cache_findings,
+    get_cache_stats, clear_cache,
+)
 
 DEFAULT_AGENTS = ['ai_security', 'ai_quality', 'ai_policy', 'ai_test', 'ai_architecture', 'ai_performance']
 CONFIDENCE_THRESHOLD = 0.7

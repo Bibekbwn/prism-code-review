@@ -16,6 +16,7 @@ import json
 import time
 import logging
 import ast
+import importlib
 import concurrent.futures
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -160,7 +161,7 @@ def get_model(provider: str = None, model_name: str = None):
             logger.warning("ANTHROPIC_API_KEY not set")
             return None, None, None
         try:
-            import anthropic
+            anthropic = __import__("anthropic")
             client = anthropic.Anthropic(api_key=api_key)
             return client, "claude", _call_claude
         except Exception as exc:
