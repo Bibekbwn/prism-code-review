@@ -175,4 +175,4 @@ def test_lsp_didclose_clears_diagnostics():
     finally:
         _send(proc, {"jsonrpc": "2.0", "method": "exit"})
         proc.wait(timeout=5)
-        shutil.rmtree(tmpdir, ignor
+        shutil.rmtree(tmpdir, ignore_errors=True)
