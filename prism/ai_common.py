@@ -175,7 +175,7 @@ def get_model(provider: str = None, model_name: str = None):
             logger.warning("OPENAI_API_KEY not set")
             return None, None, None
         try:
-            import openai
+            openai = importlib.import_module("openai")
             client = openai.OpenAI(api_key=api_key)
             return client, "openai", _call_openai
         except Exception as exc:
