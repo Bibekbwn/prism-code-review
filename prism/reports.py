@@ -164,13 +164,24 @@ def delete_report(report_id: str) -> bool:
 
 
 def clear_reports() -> int:
-    """Delete all reports. Returns the number of reports deleted."""
+    """Delete all report files. Returns the number of reports deleted.
+
+    Deletes files individually rather than rmtree-ing the directory, because
+    on Windows the directory itself can be locked (e.g. open in Explorer or
+    a file handle held by the dashboard), causing PermissionError.
+    """
     if not os.path.exists(REPORTS_DIR):
         return 0
-    import shutil
-    # Count files before deleting
-    count = len([f for f in os.listdir(REPORTS_DIR) if f.endswith(".json")])
-    shutil.rmtree(REPORTS_DIR)
+    count = 0
+    for name in os.listdir(REPORTS_DIR):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(REPORTS_DIR, name)
+        try:
+            os.remove(path)
+            count += 1
+        except OSError:
+            pass
     return count
 
 

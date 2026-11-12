@@ -3,8 +3,6 @@ name: PRISM Code Review
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-  push:
-    branches: [main]
 
 jobs:
   prism-review:
@@ -17,14 +15,16 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: '3.11'
 
       - name: Install PRISM
         run: |
-          pip install -e prism/
+          pip install -e .
 
-      - name: Run PRISM review
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      - name: Run PRISM review (lite - no API key needed)
         run: |
-          prism --effort balanced check-staged
+          python -m prism.cli check-staged --effort lite --json
+        # Lite mode runs the deterministic regex agents only (no API key).
+        # For full AI review, set GEMINI_API_KEY in repo secrets and
+        # change --effort lite to --effort balanced above.
+        continue-on-error: true

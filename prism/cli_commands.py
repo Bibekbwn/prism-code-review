@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import concurrent.futures
 from pathlib import Path
 
 from prism.agents import (
@@ -236,6 +237,9 @@ AGENT COMMANDS:
 SETUP COMMANDS:
     prism init                      Create prism.json config
     prism install-hook              Install pre-commit git hook
+    prism key set --provider gemini --key YOUR_KEY   Set API key
+    prism key status                Show current API key status
+    prism key delete                Delete API keys from .env
 
 OTHER COMMANDS:
     prism policy                    Show deviation policy
@@ -303,28 +307,38 @@ def _cmd_config(args):
 
 
 def _cmd_init(args):
-    config = {
-        "agents": DEFAULT_AGENTS,
-        "block_on": ["critical", "high"],
-        "quality_gates": {
-            "max_complexity": 10,
-            "max_file_length": 500,
-            "min_coverage": 0,
-        },
-        "confidence_threshold": CONFIDENCE_THRESHOLD,
-    }
-    with open("prism.json", "w") as f:
-        json.dump(config, f, indent=2)
-    print("Created prism.json")
+    """Scaffold config and env WITHOUT overwriting existing files.
 
-    # Scaffold .env from .env.example so the dev just adds their key
-    if not Path(".env").exists() and Path(".env.example").exists():
-        shutil.copy(".env.example", ".env")
-        print("Created .env from .env.example - edit it and add your API key")
-    elif not Path(".env").exists():
-        print("No .env.example found - create .env with GEMINI_API_KEY=your_key")
+    prism.json ships with the repo, so this never clobbers a custom config.
+    .env is created from .env.example if missing; the developer then runs
+    `prism key set` — no manual file editing required.
+    """
+    if Path("prism.json").exists() or Path(".prism.json").exists():
+        print("prism.json already exists - left untouched")
     else:
-        print(".env already exists")
+        config = {
+            "agents": DEFAULT_AGENTS,
+            "block_on": ["critical", "high"],
+            "quality_gates": {
+                "max_complexity": 10,
+                "max_file_length": 500,
+                "min_coverage": 0,
+            },
+            "confidence_threshold": CONFIDENCE_THRESHOLD,
+        }
+        with open("prism.json", "w") as f:
+            json.dump(config, f, indent=2)
+        print("Created prism.json")
+
+    # Scaffold .env from .env.example if missing (developer never edits it)
+    env = Path(".env")
+    if not env.exists() and Path(".env.example").exists():
+        shutil.copy(".env.example", ".env")
+        print("Created .env from .env.example")
+    elif not env.exists():
+        print("No .env.example found")
+
+    print("Next: prism key set --provider gemini --key YOUR_API_KEY")
 
 
 def _cmd_install_hook(args):
@@ -337,6 +351,141 @@ def _cmd_install_hook(args):
     )
     hook.chmod(0o755)
     print("Installed pre-commit hook")
+
+
+def _cmd_key(args):
+    """Manage API keys for AI providers.
+
+    Only one provider key is kept at a time: setting a key for one provider
+    removes the keys of the other providers so exactly one is active.
+    """
+    env_path = Path(".env")
+    if not env_path.exists():
+        env_path = Path(".config/.env")
+
+    valid_providers = ["gemini", "openai", "claude"]
+    env_vars = {
+        "gemini": "GEMINI_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "claude": "ANTHROPIC_API_KEY",
+    }
+    all_key_vars = set(env_vars.values())
+
+    if args.action == "set":
+        provider = args.provider
+        key = args.key
+
+        if provider not in valid_providers:
+            print("Invalid provider: {}".format(provider))
+            print("Valid providers: {}".format(", ".join(valid_providers)))
+            return
+
+        if not key:
+            print("No key provided. Usage: prism key set --provider gemini --key YOUR_KEY")
+            return
+
+        env_var = env_vars[provider]
+
+        if env_path.exists():
+            lines = env_path.read_text().splitlines()
+        else:
+            lines = []
+            env_path.parent.mkdir(parents=True, exist_ok=True)
+
+        key_written = False
+        provider_written = False
+        new_lines = []
+        for line in lines:
+            stripped = line.strip()
+            # Drop keys belonging to OTHER providers (mutual exclusivity)
+            if any(stripped.startswith(v + "=") for v in all_key_vars):
+                if stripped.startswith(env_var + "="):
+                    new_lines.append('{env_var}="{key}"'.format(env_var=env_var, key=key))
+                    key_written = True
+                # else: silently drop the other provider's key
+                continue
+            if stripped.startswith("MODEL_PROVIDER="):
+                new_lines.append("MODEL_PROVIDER={}".format(provider))
+                provider_written = True
+                continue
+            new_lines.append(line)
+
+        if not key_written:
+            new_lines.append('{env_var}="{key}"'.format(env_var=env_var, key=key))
+        if not provider_written:
+            new_lines.append("MODEL_PROVIDER={}".format(provider))
+
+        env_path.write_text("\n".join(new_lines) + "\n")
+        print("Set {provider} API key in {path}".format(provider=provider, path=env_path))
+        print("Environment variable: {}".format(env_var))
+        print("Active provider: {}".format(provider))
+        print("Other provider keys were removed (only one key is kept).")
+
+    elif args.action == "delete":
+        if not env_path.exists():
+            print("No .env file found at {}".format(env_path))
+            return
+
+        lines = env_path.read_text().splitlines()
+        new_lines = []
+        deleted = []
+        for line in lines:
+            stripped = line.strip()
+            removed = None
+            for provider, env_var in env_vars.items():
+                if stripped.startswith(env_var + "="):
+                    removed = env_var
+                    break
+            if removed:
+                deleted.append(removed)
+            else:
+                new_lines.append(line)
+
+        if deleted:
+            env_path.write_text("\n".join(new_lines) + "\n")
+            print("Deleted API key(s) from {}: {}".format(env_path, ", ".join(deleted)))
+        else:
+            print("No API keys found in {}".format(env_path))
+
+    elif args.action == "status":
+        if not env_path.exists():
+            print("No .env file found at {}".format(env_path))
+            return
+
+        lines = env_path.read_text().splitlines()
+        found = False
+        for line in lines:
+            stripped = line.strip()
+            for provider in valid_providers:
+                env_var = env_vars[provider]
+                if stripped.startswith(env_var + "="):
+                    value = stripped.split("=", 1)[1].strip().strip('"')
+                    if value and not _is_placeholder_value(value):
+                        masked = value[:4] + "..." + value[-4:] if len(value) > 8 else "***"
+                        print("{}: {}".format(provider, masked))
+                        found = True
+        if not found:
+            print("No API keys configured")
+            print("Run: prism key set --provider gemini --key YOUR_KEY")
+        else:
+            print("\nActive provider: {}".format(_get_active_provider(lines)))
+
+
+def _is_placeholder_value(value):
+    """Return True if the value is a placeholder, not a real key."""
+    lowered = value.lower()
+    return any(marker in lowered for marker in (
+        "your-", "example", "placeholder", "changeme", "xxx",
+        "api-key-here", "token-here", "secret-here",
+    ))
+
+
+def _get_active_provider(lines):
+    """Get the active provider from .env lines."""
+    for line in lines:
+        if line.strip().startswith("MODEL_PROVIDER="):
+            return line.split("=", 1)[1].strip()
+    return "gemini (default)"
 
 
 def _cmd_policy(args):
@@ -358,13 +507,68 @@ def _cmd_reports(args):
 
 
 def _cmd_dashboard(args):
+    """Generate a self-contained HTML dashboard with embedded report data.
+
+    The dashboard HTML is written to .prism-reports/dashboard.html with the
+    full report data (including per-finding details) inlined as JSON, so it
+    renders correctly when opened via file:// (no fetch/CORS issues) and can
+    be shared as a single file. The dashboard supports severity/agent filters,
+    charts, and per-finding detail views.
+    """
+    import json as _json
+    from prism.reports import load_index, load_report
+
     viewer = Path(__file__).parent / "dashboard.html"
-    if viewer.exists():
-        abs_path = str(viewer.resolve())
-        print("Dashboard: file:///{}".format(abs_path.replace("\\", "/")))
-        print("Open this in your browser to see the visual report timeline.")
-    else:
-        print("Dashboard not found at: {}".format(viewer))
+    if not viewer.exists():
+        print("Dashboard template not found at: {}".format(viewer))
+        return
+
+    # Load index summaries + full findings for each report
+    index = load_index()
+    summaries = index.get("reports", [])
+    full_reports = []
+    for entry in summaries:
+        report = load_report(entry["id"])
+        if report:
+            full_reports.append(report)
+        else:
+            # Fall back to the index summary (no findings detail)
+            full_reports.append(entry)
+
+    template = viewer.read_text()
+    embedded = _json.dumps(full_reports)
+
+    # Inject the embedded data and call render directly (no fetch)
+    injection = (
+        "const EMBEDDED_REPORTS = " + embedded + ";\n"
+        "loadReports();\n"
+    )
+    # Replace the original fetch-based loadReports with a no-op that uses embedded data
+    import re
+    html = template
+    # Replace the loadReports function to use embedded data
+    html = re.sub(
+        r"function loadReports\(\) \{.*?\}\n",
+        "function loadReports() {\n"
+        "  render({reports: EMBEDDED_REPORTS});\n"
+        "}\n",
+        html,
+        count=1,
+        flags=re.DOTALL,
+    )
+    # Replace the final loadReports() call with embedded data injection
+    html = html.replace(
+        "loadReports();\n</script>",
+        injection + "</script>"
+    )
+
+    out_path = Path(".prism-reports/dashboard.html")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(html)
+    abs_path = str(out_path.resolve())
+    print("Dashboard: file:///{}".format(abs_path.replace("\\", "/")))
+    print("Reports embedded: {}".format(len(full_reports)))
+    print("Open this in your browser to see the visual report timeline.")
 
 
 def _cmd_report(args):
@@ -422,10 +626,11 @@ def _cmd_check(args):
                 "agent": finding.agent,
                 "severity": finding.severity.value,
                 "category": finding.category,
-                "message": finding.message,
+                "problem": finding.message,
                 "file": finding.file,
                 "line": finding.line,
                 "suggestion": finding.suggestion,
+                "suggested_code": finding.suggested_code,
                 "confidence": finding.confidence,
                 "rule_id": finding.rule_id,
             })

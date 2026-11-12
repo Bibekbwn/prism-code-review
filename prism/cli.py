@@ -49,7 +49,7 @@ from prism.cli_commands import (
     _cmd_uninstall_hook, _cmd_stats, _cmd_config, _cmd_init, _cmd_install_hook,
     _cmd_policy, _cmd_feedback, _cmd_suppressed, _cmd_reports, _cmd_dashboard,
     _cmd_report, _cmd_delete_report, _cmd_clear_reports, _cmd_cache,
-    _cmd_check, _cmd_check_staged,
+    _cmd_check, _cmd_check_staged, _cmd_key,
 )
 
 
@@ -129,6 +129,13 @@ def build_parser():
     cache_cmd.add_argument("action", choices=["stats", "clear", "status"],
                            help="Cache action to perform")
 
+    key_cmd = sub.add_parser("key", help="Manage API keys")
+    key_cmd.add_argument("action", choices=["set", "delete", "status"],
+                         help="Key action to perform")
+    key_cmd.add_argument("--provider", choices=["gemini", "openai", "claude"],
+                         default="gemini", help="AI provider")
+    key_cmd.add_argument("--key", help="API key value (required for set)")
+
     return parser
 
 
@@ -154,6 +161,7 @@ _COMMANDS = {
     "check-staged": _cmd_check_staged,
     "test": _run_self_tests,
     "benchmark": _run_benchmark,
+    "key": _cmd_key,
 }
 
 
