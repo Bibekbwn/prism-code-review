@@ -20,10 +20,6 @@ _logger = logging.getLogger(__name__)
 _no_key_warned = False
 
 
-_logger = logging.getLogger(__name__)
-_no_key_warned = False
-
-
 def _warn_no_key(provider, env_var):
     """Print a one-time, actionable message when no API key is configured.
 
