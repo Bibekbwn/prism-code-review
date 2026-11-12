@@ -19,4 +19,5 @@ htmlcov/
 .prism-reports/
 .prism-cache.json
 tmp*.py
+.vscode/
 
