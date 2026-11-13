@@ -147,9 +147,14 @@ def risk_score(file_path: str, content: str, diff: str, findings=None) -> float:
 def quality_gates_met(results: List[AgentResult], config: dict) -> bool:
     """Check if all quality gates pass.
 
-    A blocking finding means the change is not safe to commit, so it fails
-    the gate as well; otherwise ``quality_gates_passed`` could be true while
-    the review is blocked, which reads as a contradiction in JSON output.
+    Only high and critical findings block the commit (the ``block_on`` set).
+    A blocking finding means the change is not safe to commit, so it fails the
+    gate as well; otherwise ``quality_gates_passed`` could be true while the
+    review is blocked, which reads as a contradiction in JSON output.
+
+    The regex quality agent reports advisory rules as LOW/MEDIUM with
+    ``Blocker.WARNS``; those never block regardless of the gate thresholds, so
+    a style preference cannot stop a commit.
     """
     gates = config.get("quality_gates", {})
     blocking_sev = set(config.get("block_on", ["critical", "high"]))
@@ -162,19 +167,22 @@ def quality_gates_met(results: List[AgentResult], config: dict) -> bool:
     max_complexity = gates.get("max_complexity")
     if max_complexity:
         for f in all_findings:
-            if f.category == "Complexity" and f.severity in (Severity.HIGH, Severity.CRITICAL):
+            if (f.category == "Complexity"
+                    and f.severity.value in blocking_sev):
                 return False
 
     max_file_length = gates.get("max_file_length")
     if max_file_length:
         for f in all_findings:
-            if f.category == "File Length":
+            if (f.category == "File Length"
+                    and f.severity.value in blocking_sev):
                 return False
 
     min_coverage = gates.get("min_coverage")
     if min_coverage:
         for f in all_findings:
-            if f.category == "Missing Tests":
+            if (f.category == "Missing Tests"
+                    and f.severity.value in blocking_sev):
                 return False
 
     return True

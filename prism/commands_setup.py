@@ -88,6 +88,47 @@ def _cmd_ignore(args):
     sys.exit(1)
 
 
+def _cmd_mode(args):
+    """Show or switch the agent selection mode.
+
+    ``all`` runs regex + AI agents, ``regex`` runs only the deterministic
+    agents (no API calls), and ``none`` skips agents entirely while still
+    writing an empty report so reports/dashboard/JSON keep working.
+    """
+    from prism.modes import VALID_MODES, describe, get_mode, set_mode
+
+    config = load_config()
+    wanted = getattr(args, "mode", None)
+
+    if not wanted:
+        current = get_mode(config)
+        print("Mode: {} - {}".format(current, describe(current)))
+        print("")
+        print("Available modes:")
+        for mode in VALID_MODES:
+            marker = "*" if mode == current else " "
+            print("  {} {:<6} {}".format(marker, mode, describe(mode)))
+        print("")
+        print("Usage: prism mode <all|regex|none>")
+        return
+
+    wanted = wanted.lower()
+    if wanted not in VALID_MODES:
+        print("Unknown mode: {}".format(wanted))
+        print("Valid modes: {}".format(", ".join(VALID_MODES)))
+        sys.exit(1)
+
+    stored = set_mode(wanted, config)
+    print("Mode set to {} - {}".format(stored, describe(stored)))
+    if wanted == "regex":
+        print("No API calls will be made; AI agents are disabled.")
+    elif wanted == "none":
+        print("No agents run. Reports are still written so the dashboard and")
+        print("JSON output keep working.")
+    else:
+        print("Regex agents and AI agents both run (needs an API key).")
+
+
 def _cmd_key(args):
     """Manage API keys for AI providers.
 
@@ -251,6 +292,7 @@ def _cmd_init(args):
                 "min_coverage": 0,
             },
             "confidence_threshold": CONFIDENCE_THRESHOLD,
+            "mode": "all",
         }
         with open("prism.json", "w") as f:
             json.dump(config, f, indent=2)
@@ -360,11 +402,30 @@ OTHER COMMANDS:
     prism policy                    Show deviation policy
     prism feedback                  Show feedback loop stats
     prism suppressed                Show historically suppressed rules
+    prism mode                      Show the current agent mode
+    prism mode regex                Regex agents only (no API calls)
+    prism mode none                 No agents at all (reports only)
+    prism mode all                  Regex + AI agents (default)
+    prism agents --enable <agent>   Re-enable a disabled agent
+    prism agents --disable <agent>  Switch off a single agent (e.g. 'ai_quality')
     prism ignore                    List files skipped by pre-commit review
     prism ignore add <pattern>      Skip a file/folder (e.g. 'docs/', '*.png')
     prism ignore remove <pattern>   Stop skipping a pattern
     prism ignore reset              Restore the default ignore list
     prism help                      Show this help message
+
+AGENT MODES:
+    all     Regex agents + AI agents (default; needs an API key)
+    regex   Deterministic regex agents only, no API calls
+    none    No agents run; reports are still written so the dashboard,
+            `prism reports` and --json output keep working
+
+FREEZING A SINGLE AGENT:
+    Use ``prism agents --disable <agent>`` to switch off exactly one regex or
+    AI agent and leave the rest running - for example to silence a noisy rule
+    without disabling the whole review. Names come from ``prism agents``.
+    ``prism agents --enable <agent>`` turns it back on. The state lives in
+    prism.json under "agents".
 
 IGNORED FILES:
     PRISM skips documentation, assets, lock files and editor noise by default.
@@ -391,28 +452,47 @@ EXAMPLES:
 
 
 def _cmd_agents(args):
-    for name, agent in AGENT_REGISTRY.items():
-        print("  {}: {}".format(name, agent.description))
+    """List agents and their on/off state; toggle with --enable/--disable."""
+    config = load_config()
+    table = _agent_table(config.get("agents", DEFAULT_AGENTS))
 
-    if getattr(args, "enable", None):
-        config = load_config()
-        agents = config.get("agents", DEFAULT_AGENTS)
-        if _set_agent_enabled(agents, args.enable, True):
-            config["agents"] = agents
+    enable = getattr(args, "enable", None)
+    disable = getattr(args, "disable", None)
+
+    if enable:
+        agents_cfg = config.get("agents", DEFAULT_AGENTS)
+        if _set_agent_enabled(agents_cfg, enable, True):
+            config["agents"] = agents_cfg
             _save_config(config)
-            print("Enabled agent: {}".format(args.enable))
+            table = _agent_table(agents_cfg)
+            print("Enabled agent: {}".format(enable))
         else:
-            print("Agent already enabled: {}".format(args.enable))
+            print("Agent already enabled: {}".format(enable))
 
-    if getattr(args, "disable", None):
-        config = load_config()
-        agents = config.get("agents", DEFAULT_AGENTS)
-        if args.disable not in _agent_table(agents):
-            print("Agent not found: {}".format(args.disable))
+    if disable:
+        agents_cfg = config.get("agents", DEFAULT_AGENTS)
+        if disable not in _agent_table(agents_cfg):
+            print("Agent not found: {}".format(disable))
             return
-        if _set_agent_enabled(agents, args.disable, False):
-            config["agents"] = agents
+        if _set_agent_enabled(agents_cfg, disable, False):
+            config["agents"] = agents_cfg
             _save_config(config)
-            print("Disabled agent: {}".format(args.disable))
+            table = _agent_table(agents_cfg)
+            print("Disabled agent: {}".format(disable))
         else:
-            print("Agent already disabled: {}".format(args.disable))
+            print("Agent already disabled: {}".format(disable))
+
+    print("")
+    print("Agents (prism.json \"agents\"):")
+    enabled = {name for name, on in table.items() if on}
+    names = list(AGENT_REGISTRY.keys())
+    for extra in table:
+        if extra not in names:
+            names.append(extra)
+    for name in names:
+        state = "enabled" if name in enabled else "disabled"
+        desc = AGENT_REGISTRY[name].description if name in AGENT_REGISTRY else ""
+        print("  [{:8}] {}{}".format(
+            state, name, ": " + desc if desc else ""))
+    print("")
+    print("Toggle one: prism agents --enable <agent> | --disable <agent>")

@@ -44,7 +44,7 @@ from prism.commands_reports import (
 )
 from prism.commands_setup import (
     _cmd_key, _cmd_init, _cmd_install_hook, _cmd_uninstall_hook, _cmd_version,
-    _cmd_help, _cmd_agents, _cmd_ignore,
+    _cmd_help, _cmd_agents, _cmd_ignore, _cmd_mode,
 )
 
 
@@ -131,6 +131,13 @@ def build_parser():
     ignore_cmd.add_argument("patterns", nargs="*",
                             help="Pattern(s) to add or remove")
 
+    mode_cmd = sub.add_parser(
+        "mode",
+        help="Show or switch the agent mode (all / regex / none)")
+    mode_cmd.add_argument("mode", nargs="?",
+                          choices=["all", "regex", "none"],
+                          help="Mode to switch to (omit to show the current one)")
+
     config_cmd = sub.add_parser("config", help="Show or manage configuration")
     config_cmd.add_argument("--set", nargs=2, metavar=("KEY", "VALUE"),
                             help="Set a config value")
@@ -185,6 +192,7 @@ _COMMANDS = {
     "benchmark": _run_benchmark,
     "key": _cmd_key,
     "ignore": _cmd_ignore,
+    "mode": _cmd_mode,
 }
 
 

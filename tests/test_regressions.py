@@ -108,11 +108,25 @@ class TestBinaryAndGates:
         assert score == 0.0
 
     def test_min_coverage_zero_is_disabled(self):
-        f = _finding(agent="test", severity=Severity.MEDIUM,
+        from prism.agents import Blocker
+
+        # A HIGH finding that WARNs (not a blocking one) exercises the
+        # min_coverage gate itself; the blocking-finding check must not fire.
+        f = _finding(agent="test", severity=Severity.HIGH,
                      category="Missing Tests", rule_id="TST-101")
+        f.blocker = Blocker.WARNS
         results = [AgentResult("test", [f])]
         assert quality_gates_met(results, {"quality_gates": {"min_coverage": 0}})
         assert not quality_gates_met(results, {"quality_gates": {"min_coverage": 80}})
+
+    def test_advisory_severity_never_blocks_gates(self):
+        # A MEDIUM advisory finding (e.g. missing tests) must not fail the
+        # commit gate: only high/critical findings block.
+        f = _finding(agent="test", severity=Severity.MEDIUM,
+                     category="Missing Tests", rule_id="TST-101")
+        results = [AgentResult("test", [f])]
+        assert quality_gates_met(
+            results, {"quality_gates": {"min_coverage": 80}})
 
 
 class TestFastSummarize:
@@ -122,8 +136,10 @@ class TestFastSummarize:
 
         seen = {}
 
-        def fake_call(model, system, file_path, content, agent, skeleton,
-                      timeout, cross_file):
+        # Signature must match the real call site; unused names are prefixed
+        # with _ to mark them as deliberate positional placeholders.
+        def fake_call(model, _system, file_path, content, agent, skeleton,
+                      timeout, _cross_file):
             seen["content"] = content
             return {"summary": "chunk summary"}
 
@@ -814,6 +830,55 @@ class TestIgnorePatterns:
         assert is_ignored("vendor/pkg/mod.py", ["vendor/"])
         assert not is_ignored("src/vendor.py", ["vendor/"])
 
+    def test_folder_pattern_matches_at_any_depth(self):
+        """`__pycache__/` must skip nested caches, not just a root-level one."""
+        from prism.ignore import is_ignored
+
+        assert is_ignored("pkg/__pycache__/mod.pyc", ["__pycache__/"])
+        assert is_ignored("a/b/__pycache__/mod.pyc", ["__pycache__/"])
+        assert not is_ignored("pkg/__pycache___notes.py", ["__pycache__/"])
+
+    def test_dotfolders_are_not_stripped(self):
+        """`.vscode/` must not be turned into `vscode/` by lstrip('.')."""
+        from prism.ignore import is_ignored
+
+        assert is_ignored(".vscode/settings.json", [".vscode/"])
+        assert is_ignored(".idea/workspace.xml", [".idea/"])
+        assert not is_ignored("vscode/settings.json", [".vscode/"])
+
+    def test_build_output_and_deps_skipped(self):
+        from prism.ignore import is_ignored
+
+        for path in ("dist/bundle.js", "build/lib/mod.py",
+                     "node_modules/pkg/index.js", "poetry.lock",
+                     "coverage/lcov.info"):
+            assert is_ignored(path), path
+
+    def test_dotfiles_that_matter_still_reviewed(self):
+        """Ignoring repo metadata must not hide real source or config."""
+        from prism.ignore import is_ignored
+
+        assert not is_ignored("Dockerfile")
+        assert not is_ignored("docker-compose.yml")
+        assert not is_ignored("prism.json")
+        assert not is_ignored("src/app.py")
+
+    def test_certificates_and_data_skipped(self):
+        from prism.ignore import is_ignored
+
+        for path in ("certs/server.pem", "keystore.p12", "dump.sql",
+                     "data/export.csv", "assets/logo.png"):
+            assert is_ignored(path), path
+
+    def test_starter_list_is_readable_subset_of_defaults(self):
+        """`prism ignore reset` writes a short, editable list."""
+        from prism.ignore import STARTER_IGNORE, is_ignored
+
+        assert len(STARTER_IGNORE) <= 30
+        for pattern in STARTER_IGNORE:
+            assert is_ignored(pattern.rstrip("/") + "/x.py", [pattern]) or \
+                is_ignored(pattern, [pattern]) or pattern.endswith("/"), pattern
+
     def test_negation_reincludes(self):
         from prism.ignore import is_ignored
 
@@ -923,3 +988,192 @@ class TestDashboardRendering:
                           re.DOTALL)
         assert match, "no EMBEDDED_REPORTS assignment found"
         assert isinstance(json.loads(match.group(1)), list)
+
+    def test_reports_written_by_review_appear_in_dashboard(self, tmp_path, monkeypatch):
+        """The dashboard must show reports produced by a real review."""
+        from prism.cli_review import review_file
+        from prism.commands_reports import build_dashboard
+        from prism.reports import save_report
+
+        monkeypatch.chdir(tmp_path)
+        src = tmp_path / "app.py"
+        src.write_text("import os\nx = 1\n")
+        results, score = review_file(str(src), {}, "lite")
+        findings = [f for r in results for f in r.findings]
+        save_report(
+            files_reviewed=["app.py"],
+            findings=[{
+                "agent": f.agent, "severity": f.severity.value,
+                "category": f.category, "problem": f.message,
+                "file": f.file, "line": f.line,
+            } for f in findings],
+            risk_score=score, blocking=len(findings), commit_allowed=True,
+        )
+
+        path = build_dashboard(open_browser=False)
+        html = Path(path).read_text(encoding="utf-8", errors="ignore")
+        assert '"files_reviewed": ["app.py"]' in html or "app.py" in html
+        assert "EMBEDDED_REPORTS" in html
+
+
+class TestAgentModes:
+    """`prism mode` must let a developer turn off regex and/or AI agents."""
+
+    def test_default_mode_is_all(self):
+        from prism.modes import MODE_ALL, get_mode
+
+        assert get_mode({}) == MODE_ALL
+
+    def test_regex_mode_drops_ai_agents(self):
+        from prism.modes import MODE_REGEX, select_agents
+
+        agents = ["security", "ai_security", "quality", "ai_quality"]
+        assert select_agents(agents, MODE_REGEX) == ["security", "quality"]
+
+    def test_none_mode_drops_everything(self):
+        from prism.modes import MODE_NONE, select_agents
+
+        agents = ["security", "ai_security"]
+        assert select_agents(agents, MODE_NONE) == []
+
+    def test_none_mode_is_not_overridden_by_max_effort(self):
+        from prism.modes import MODE_NONE, select_agents
+
+        assert select_agents(["security"], MODE_NONE, "max") == []
+
+    def test_lite_effort_still_filters_in_all_mode(self):
+        from prism.modes import MODE_ALL, select_agents
+
+        agents = ["security", "ai_security"]
+        assert select_agents(agents, MODE_ALL, "lite") == ["security"]
+
+    def test_set_mode_persists_to_prism_json(self, tmp_path, monkeypatch):
+        import json
+
+        import prism.modes as modes
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "prism.json").write_text(json.dumps({"agents": ["security"]}))
+        assert modes.set_mode("regex") == "regex"
+        assert json.loads((tmp_path / "prism.json").read_text())["mode"] == "regex"
+        assert modes.get_mode() == "regex"
+
+    def test_set_mode_rejects_unknown(self, tmp_path, monkeypatch):
+        import prism.modes as modes
+
+        monkeypatch.chdir(tmp_path)
+        assert modes.set_mode("bogus") is None
+
+    def test_get_mode_falls_back_for_garbage(self):
+        from prism.modes import MODE_ALL, get_mode
+
+        assert get_mode({"mode": "nonsense"}) == MODE_ALL
+
+    def test_mode_command_lists_current(self, tmp_path, monkeypatch, capsys):
+        import argparse
+
+        import prism.cli_commands as cc
+
+        monkeypatch.chdir(tmp_path)
+        cc._cmd_mode(argparse.Namespace(mode=None))
+        out = capsys.readouterr().out
+        assert "Mode: all" in out
+        assert "regex" in out and "none" in out
+
+    def test_mode_command_sets_and_reports(self, tmp_path, monkeypatch, capsys):
+        import argparse
+        import json
+
+        import prism.cli_commands as cc
+
+        monkeypatch.chdir(tmp_path)
+        cc._cmd_mode(argparse.Namespace(mode="regex"))
+        assert json.loads((tmp_path / "prism.json").read_text())["mode"] == "regex"
+        assert "Mode set to regex" in capsys.readouterr().out
+
+    def test_mode_command_rejects_unknown(self, tmp_path, monkeypatch):
+        import argparse
+
+        import prism.cli_commands as cc
+
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SystemExit):
+            cc._cmd_mode(argparse.Namespace(mode="bogus"))
+
+    def test_none_mode_still_writes_a_report(self, tmp_path, monkeypatch):
+        """`none` must not break the report/dashboard pipeline."""
+        from prism.cli_review import review_file
+
+        monkeypatch.chdir(tmp_path)
+        src = tmp_path / "app.py"
+        src.write_text('API_KEY = "supersecretvalue123"\n')
+
+        config = {"mode": "none", "agents": ["security", "quality"],
+                  "policy": {"headers": False}}
+        results, score = review_file(str(src), config, "balanced")
+        assert results == []
+        assert score == 0.0
+
+    def test_regex_mode_skips_ai_agents_in_review(self, tmp_path, monkeypatch):
+        from prism.cli_review import review_file
+
+        monkeypatch.chdir(tmp_path)
+        src = tmp_path / "app.py"
+        src.write_text('API_KEY = "supersecretvalue123"\n')
+
+        config = {"mode": "regex",
+                  "agents": ["security", "ai_security"],
+                  "policy": {"headers": False}}
+        results, _score = review_file(str(src), config, "balanced")
+        names = {r.agent_name for r in results}
+        assert "ai_security" not in names
+
+
+class TestAgentModeSelection:
+    """select_agents composes mode and the per-invocation effort."""
+
+    AGENTS = ["security", "quality", "ai_security", "ai_quality"]
+
+    def test_all_mode_keeps_everything(self):
+        from prism.modes import MODE_ALL, select_agents
+
+        assert select_agents(self.AGENTS, MODE_ALL) == self.AGENTS
+
+    def test_regex_mode_drops_ai_agents(self):
+        from prism.modes import MODE_REGEX, select_agents
+
+        assert select_agents(self.AGENTS, MODE_REGEX) == ["security", "quality"]
+
+    def test_none_mode_is_empty(self):
+        from prism.modes import MODE_NONE, select_agents
+
+        assert select_agents(self.AGENTS, MODE_NONE) == []
+
+    def test_lite_effort_drops_ai_agents(self):
+        from prism.modes import MODE_ALL, select_agents
+
+        assert select_agents(self.AGENTS, MODE_ALL, effort="lite") == [
+            "security", "quality"]
+
+    def test_disabled_agent_is_actually_skipped_in_review(self, tmp_path, monkeypatch):
+        # `prism agents --disable quality` must stop the agent in a review.
+        import importlib
+
+        from prism.cli_review import review_file
+        importlib.import_module("prism.agents_quality")
+        importlib.import_module("prism.agents_test")
+
+        monkeypatch.chdir(tmp_path)
+        src = tmp_path / "app.py"
+        src.write_text("def f():\n    return 1\n")
+
+        base = {"mode": "regex", "agents": ["quality", "test"],
+                "policy": {"headers": False}}
+        before, _ = review_file(str(src), base, "lite")
+        after, _ = review_file(
+            str(src), {"mode": "regex", "agents": {"quality": False, "test": True},
+                       "policy": {"headers": False}}, "lite")
+
+        assert any(r.agent_name == "quality" for r in before)
+        assert not any(r.agent_name == "quality" for r in after)
+        assert any(r.agent_name == "test" for r in after)

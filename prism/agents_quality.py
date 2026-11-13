@@ -2,6 +2,11 @@
 Code Quality Agent - Checks complexity, cleanliness, and style.
 
 Rule IDs follow SonarQube convention: QUAL-XXX
+
+Thresholds are intentionally lenient. The regex pass runs on every commit, so
+a strict rule set turns the pre-commit hook into a wall of warnings that
+developers learn to ignore. Anything that is a style preference is LOW with
+WARNS (advisory), and only a genuine complexity problem is HIGH.
 """
 
 import ast
@@ -10,9 +15,32 @@ from typing import List
 from prism.agents import BaseAgent, Finding, Severity, Blocker, register_agent
 
 
-MAX_FUNCTION_LENGTH = 50
-MAX_FILE_LENGTH = 500
-COMPLEXITY_THRESHOLD = 10
+MAX_FUNCTION_LENGTH = 80
+MAX_FILE_LENGTH = 800
+COMPLEXITY_THRESHOLD = 15
+
+# Advisory checks: reported at most once per file (first occurrence) so a
+# long file cannot produce 200 identical warnings.
+MAX_PER_RULE = 3
+
+# Which checks run. Structural limits (file/function length, complexity) and
+# the cheap, high-signal style checks (naming, imports) stay on; the purely
+# subjective or trivially-triggered ones are off by default and opt-in via
+# prism.json, e.g. {"quality": {"docstrings": true}}. These produced a wall
+# of warnings developers learned to ignore.
+QUALITY_DEFAULTS = {
+    "file_length": True,
+    "function_length": True,
+    "complexity": True,
+    "naming": True,
+    "imports": True,
+    "duplication": False,
+    "todo_markers": False,
+    "line_length": False,
+    "magic_numbers": False,
+    "docstrings": False,
+    "type_hints": False,
+}
 
 
 def _count_lines_in_function(lines: list, start: int) -> int:
@@ -30,9 +58,22 @@ def _count_lines_in_function(lines: list, start: int) -> int:
 
 
 def _cyclomatic_complexity(lines: list) -> int:
+    """Approximate cyclomatic complexity.
+
+    Counts decision points rather than every `and`/`or` occurrence: the old
+    version counted both plus every `if` in comments and strings, which
+    inflated simple functions past the threshold.
+    """
     complexity = 1
     for line in lines:
-        if re.search(r'\b(if|elif|else\s+if|for|while|except|and|or)\b', line):
+        stripped = line.strip()
+        if stripped.startswith(("#", "//", "*", "/*", "*/")):
+            continue
+        # Strip string literals so keywords inside text are not counted.
+        code = re.sub(r'"[^"]*"|\'[^\']*\'', '""', line)
+        if re.search(r'^\s*(if|elif|for|while|except|with|case)\b', code):
+            complexity += 1
+        elif re.search(r'\b(and|or)\b', code):
             complexity += 1
     return complexity
 
@@ -42,20 +83,27 @@ class QualityAgent(BaseAgent):
     name = "quality"
     description = "Checks code complexity, cleanliness, style, duplication, naming, imports"
 
+    def __init__(self):
+        self._enabled = dict(QUALITY_DEFAULTS)
+
+    def _on(self, name):
+        """True when the ``name`` check is enabled (default dict is lenient)."""
+        return bool(self._enabled.get(name, QUALITY_DEFAULTS.get(name, False)))
+
     def _check(self, file_path: str, content: str, diff: str,
                skeleton: str = "", line_count: int = None,
                fast: bool = False) -> List[Finding]:
         findings: List[Finding] = []
         lines = content.split("\n")
 
-        if len(lines) > MAX_FILE_LENGTH:
+        if self._on("file_length") and len(lines) > MAX_FILE_LENGTH:
             findings.append(Finding(
                 agent=self.name,
-                severity=Severity.MEDIUM,
+                severity=Severity.LOW,
                 category="File Length",
                 message="File has {} lines (max {})".format(len(lines), MAX_FILE_LENGTH),
                 file=file_path,
-                suggestion="Split into smaller modules.",
+                suggestion="Consider splitting into smaller modules.",
                 blocker=Blocker.WARNS,
                 confidence=1.0,
                 rule_id="QUAL-101",
@@ -71,76 +119,120 @@ class QualityAgent(BaseAgent):
             func_content = "\n".join(lines[start:start + func_lines])
             complexity = _cyclomatic_complexity(func_content)
 
-            if func_lines > MAX_FUNCTION_LENGTH:
+            if self._on("function_length") and func_lines > MAX_FUNCTION_LENGTH:
                 findings.append(Finding(
                     agent=self.name,
-                    severity=Severity.MEDIUM,
+                    severity=Severity.LOW,
                     category="Function Length",
                     message="Function at line {} has {} lines (max {})".format(
                         start + 1, func_lines, MAX_FUNCTION_LENGTH),
                     file=file_path,
                     line=start + 1,
-                    suggestion="Break into smaller helper functions.",
+                    suggestion="Consider breaking into smaller helpers.",
                     blocker=Blocker.WARNS,
                     confidence=1.0,
                     rule_id="QUAL-102",
                 ))
 
-            if complexity > COMPLEXITY_THRESHOLD:
+            if self._on("complexity") and complexity > COMPLEXITY_THRESHOLD:
                 findings.append(Finding(
                     agent=self.name,
-                    severity=Severity.HIGH,
+                    severity=Severity.MEDIUM,
                     category="Complexity",
                     message="Function at line {} has complexity {} (max {})".format(
                         start + 1, complexity, COMPLEXITY_THRESHOLD),
                     file=file_path,
                     line=start + 1,
                     suggestion="Reduce branching. Use early returns, lookup tables, or strategy pattern.",
-                    blocker=Blocker.BLOCKS,
+                    blocker=Blocker.WARNS,
                     confidence=0.90,
                     rule_id="QUAL-103",
                 ))
 
-        for i, line in enumerate(lines):
-            match = re.search(r'\b(TODO|FIXME|HACK|XXX|BUG)\b', line)
-            if match:
-                findings.append(Finding(
-                    agent=self.name,
-                    severity=Severity.LOW,
-                    category="Incomplete Code",
-                    message="Found '{}' marker".format(match.group(1)),
-                    file=file_path,
-                    line=i + 1,
-                    suggestion="Resolve before committing.",
-                    blocker=Blocker.WARNS,
-                    confidence=1.0,
-                    rule_id="QUAL-104",
-                ))
+        if self._on("todo_markers"):
+            findings.extend(_cap(_check_incomplete_markers(lines, file_path),
+                                 "QUAL-104"))
+        if self._on("line_length"):
+            findings.extend(_cap(_check_line_length(lines, file_path), "QUAL-105"))
 
-        for i, line in enumerate(lines):
-            if len(line) > 120:
-                findings.append(Finding(
-                    agent=self.name,
-                    severity=Severity.LOW,
-                    category="Line Length",
-                    message="Line {} has {} characters (max 120)".format(i + 1, len(line)),
-                    file=file_path,
-                    line=i + 1,
-                    suggestion="Break long lines for readability.",
-                    blocker=Blocker.WARNS,
-                    confidence=1.0,
-                    rule_id="QUAL-105",
-                ))
-
-        # New lint checks
-        findings.extend(_check_duplication(content, file_path))
-        findings.extend(_check_naming(content, file_path))
-        findings.extend(_check_imports(content, file_path))
-        findings.extend(_check_magic_numbers(content, file_path))
-        findings.extend(_check_missing_docstrings(content, file_path))
-        findings.extend(_check_missing_type_hints(content, file_path))
+        # Advisory checks, each capped per file (see _cap).
+        if self._on("duplication"):
+            findings.extend(_cap(_check_duplication(content, file_path), "QUAL-106", 3))
+        if self._on("naming"):
+            findings.extend(_cap(_check_naming(content, file_path), "QUAL-107"))
+        if self._on("imports"):
+            findings.extend(_cap(_check_imports(content, file_path), "QUAL-108"))
+        if self._on("magic_numbers"):
+            findings.extend(_cap(_check_magic_numbers(content, file_path), "QUAL-109"))
+        if self._on("docstrings"):
+            findings.extend(_cap(_check_missing_docstrings(content, file_path), "QUAL-110"))
+        if self._on("type_hints"):
+            findings.extend(_cap(_check_missing_type_hints(content, file_path), "QUAL-111"))
 
         return findings
+
+
+def _cap(findings, rule_id, limit=MAX_PER_RULE):
+    """Keep at most ``limit`` findings per rule id.
+
+    A 900-line file used to emit one warning per TODO, per long line and per
+    missing annotation. Three examples are enough to make the point; the rest
+    is noise the developer scrolls past.
+    """
+    kept = []
+    seen = 0
+    for f in findings:
+        if f.rule_id == rule_id:
+            if seen >= limit:
+                continue
+            seen += 1
+        kept.append(f)
+    return kept
+
+
+def _check_incomplete_markers(lines, file_path):
+    """Report TODO/FIXME/HACK/XXX markers (capped per file)."""
+    findings = []
+    for i, line in enumerate(lines):
+        if len(findings) >= MAX_PER_RULE:
+            break
+        match = re.search(r'\b(TODO|FIXME|HACK|XXX|BUG)\b', line)
+        if match:
+            findings.append(Finding(
+                agent="quality",
+                severity=Severity.LOW,
+                category="Incomplete Code",
+                message="Found '{}' marker".format(match.group(1)),
+                file=file_path,
+                line=i + 1,
+                suggestion="Resolve before committing.",
+                blocker=Blocker.WARNS,
+                confidence=1.0,
+                rule_id="QUAL-104",
+            ))
+    return findings
+
+
+def _check_line_length(lines, file_path):
+    """Report lines over 120 characters (capped per file)."""
+    findings = []
+    for i, line in enumerate(lines):
+        if len(findings) >= MAX_PER_RULE:
+            break
+        if len(line) > 120:
+            findings.append(Finding(
+                agent="quality",
+                severity=Severity.LOW,
+                category="Line Length",
+                message="Line {} has {} characters (max 120)".format(i + 1, len(line)),
+                file=file_path,
+                line=i + 1,
+                suggestion="Break long lines for readability.",
+                blocker=Blocker.WARNS,
+                confidence=1.0,
+                rule_id="QUAL-105",
+            ))
+    return findings
 
 
 def _check_magic_numbers(content: str, file_path: str) -> List[Finding]:
@@ -186,9 +278,9 @@ def _check_magic_numbers(content: str, file_path: str) -> List[Finding]:
                 message="Magic number '{}' on line {}".format(num, i + 1),
                 file=file_path,
                 line=i + 1,
-                suggestion="Extract into a named constant for clarity.",
+                suggestion="Consider a named constant if this value carries meaning.",
                 blocker=Blocker.WARNS,
-                confidence=0.60,
+                confidence=0.40,
                 rule_id="QUAL-109",
             ))
     return findings

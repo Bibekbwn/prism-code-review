@@ -248,24 +248,53 @@ def _dashboard_enabled(args):
     return True
 
 
+def _suggested_code_for(finding, content):
+    """Return a code-level fix for a finding, or None.
+
+    AI findings already carry ``suggested_code``. Deterministic findings do
+    not, which is why the dashboard's "AI code" column was empty for most
+    rows: the fix existed in the autofix engine but was never surfaced in the
+    report. This asks the engine for the fixed line(s) so every auto-fixable
+    finding shows a concrete code change.
+    """
+    if finding.suggested_code:
+        return finding.suggested_code
+    try:
+        from prism.autofix import generate_fix
+        fixed = generate_fix(finding, content)
+    except Exception:
+        return None
+    return fixed
+
+
+def _finding_to_dict(finding, content=""):
+    """Serialise a Finding for reports/JSON (the dashboard's data source)."""
+    return {
+        "agent": finding.agent,
+        "severity": finding.severity.value,
+        "category": finding.category,
+        "problem": finding.message,
+        "file": finding.file,
+        "line": finding.line,
+        "suggestion": finding.suggestion,
+        "suggested_code": _suggested_code_for(finding, content),
+        "confidence": finding.confidence,
+        "rule_id": finding.rule_id,
+    }
+
+
 def _review_one(file_path, config, effort, fast, diff):
     """Review a single file. Returns (results, score, file_findings)."""
     results, score = review_file(file_path, config, effort, fast, diff)
-    file_findings = []
-    for r in results:
-        for finding in r.findings:
-            file_findings.append({
-                "agent": finding.agent,
-                "severity": finding.severity.value,
-                "category": finding.category,
-                "problem": finding.message,
-                "file": finding.file,
-                "line": finding.line,
-                "suggestion": finding.suggestion,
-                "suggested_code": finding.suggested_code,
-                "confidence": finding.confidence,
-                "rule_id": finding.rule_id,
-            })
+    try:
+        content = Path(file_path).read_text(errors="ignore")
+    except OSError:
+        content = ""
+    file_findings = [
+        _finding_to_dict(f, content)
+        for r in results
+        for f in r.findings
+    ]
     return results, score, file_findings
 
 

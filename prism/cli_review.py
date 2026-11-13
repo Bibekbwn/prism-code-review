@@ -2,15 +2,16 @@ import re
 from pathlib import Path
 
 from prism.agents import (
-    Finding, Severity, Blocker, AgentResult, run_pipeline, risk_score,
-    quality_gates_met,
+    AGENT_REGISTRY, Finding, Severity, Blocker, AgentResult, run_pipeline,
+    risk_score, quality_gates_met,
 )
 from prism.ai_common import build_skeleton
 from prism.feedback import scan_dependencies, should_suppress
-from prism import agents_policy
+from prism.modes import get_mode, select_agents
+from prism import agents_policy, agents_quality
 
 from prism.cli_config import (
-    DEFAULT_AGENTS, CONFIDENCE_THRESHOLD, load_deviation_policy, is_deviation,
+    CONFIDENCE_THRESHOLD, load_deviation_policy, is_deviation, enabled_agents,
 )
 
 _SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
@@ -154,6 +155,9 @@ def review_file(file_path, config, effort="balanced", fast=False, diff=""):
     Returns (results, risk_score). `diff` (git diff hunks) is preferred over
     full content when available. `--effort lite` runs only deterministic
     regex agents (no API calls); `balanced`/`max` also run the AI agents.
+
+    The stored ``mode`` (``prism mode``) caps the selection: ``regex`` pins the
+    review to the deterministic agents and ``none`` skips agents entirely.
     """
     path = Path(file_path)
     if not path.exists():
@@ -165,20 +169,37 @@ def review_file(file_path, config, effort="balanced", fast=False, diff=""):
         return [], 0.0
     skeleton = build_skeleton(file_path, content)
     line_count = content.count("\n") + 1
-    agents = list(config.get("agents", DEFAULT_AGENTS))
+    agents = enabled_agents(config)
     # `lite` effort is for IDE/LSP use: deterministic agents only, no API calls
     # and no repo-wide coverage run.
     if effort == "lite":
-        agents = [a for a in agents if not a.startswith("ai_")]
         fast = True
-    agents_policy.HEADER_CHECKS_ENABLED = bool(
-        config.get("policy", {}).get("headers", False)
-    )
+    agents = select_agents(agents, get_mode(config), effort)
+    # The policy agent's noisy rules (SPDX headers, print(), TODO refs) are
+    # opt-in per project rather than always on.
+    policy_cfg = config.get("policy", {}) or {}
+    agents_policy.HEADER_CHECKS_ENABLED = bool(policy_cfg.get("headers", False))
+    agents_policy.BANNED_CONSOLE_ENABLED = bool(
+        policy_cfg.get("banned_console", False))
+    agents_policy.CHECK_PRINT_ENABLED = bool(policy_cfg.get("check_print", False))
+    agents_policy.CHECK_TODO_REFS_ENABLED = bool(
+        policy_cfg.get("check_todo_refs", False))
+    if "policy" in AGENT_REGISTRY:
+        AGENT_REGISTRY["policy"]._policy = policy_cfg
+    # Quality rules that are style preferences are off unless opted in.
+    if "quality" in AGENT_REGISTRY:
+        AGENT_REGISTRY["quality"]._enabled = dict(
+            agents_quality.QUALITY_DEFAULTS,
+            **(config.get("quality", {}) or {}))
+    if not agents:
+        # `none` mode: nothing to review, but callers still expect a result set
+        # so the report/JSON/dashboard paths keep working.
+        return [], 0.0
     results = run_pipeline(agents, file_path, content, diff, skeleton,
                            line_count=line_count, fast=fast)
 
-    # Run SCA dependency scan
-    sca_findings = scan_dependencies(file_path, content)
+    # Run SCA dependency scan (a deterministic check, so `none` mode skips it)
+    sca_findings = [] if not agents else scan_dependencies(file_path, content)
     if sca_findings:
         sca_results = []
         for item in sca_findings:

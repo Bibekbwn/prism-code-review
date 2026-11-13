@@ -23,7 +23,7 @@ from prism.cli_review import review_file, format_report, json_output
 from prism.commands_common import (
     _git_commit_info, _agent_table, _set_agent_enabled, _save_config,
     _apply_fixes_with_preview, _cached_risk_score, _findings_to_agent_results,
-    _empty_staged_output, _finalize_review, _review_one,
+    _empty_staged_output, _finalize_review, _review_one, _finding_to_dict,
 )
 
 # The command handlers live in the sibling modules, but this module is the
@@ -37,7 +37,7 @@ from prism.commands_reports import (
 from prism.commands_setup import (
     _cmd_key, _is_placeholder_value, _get_active_provider, _cmd_init,
     _cmd_install_hook, _cmd_uninstall_hook, _cmd_version, _cmd_help,
-    _cmd_agents, _cmd_ignore,
+    _cmd_agents, _cmd_ignore, _cmd_mode,
 )
 
 __all__ = [
@@ -47,8 +47,9 @@ __all__ = [
     "_cmd_policy", "_cmd_feedback", "_cmd_suppressed", "_cmd_cache", "_cmd_key",
     "_is_placeholder_value", "_get_active_provider", "_cmd_init",
     "_cmd_install_hook", "_cmd_uninstall_hook", "_cmd_version", "_cmd_help",
-    "_cmd_agents", "_cmd_ignore", "_git_commit_info", "_agent_table",
-    "_set_agent_enabled", "_save_config", "_apply_fixes_with_preview",
+    "_cmd_agents", "_cmd_ignore", "_cmd_mode",
+    "_git_commit_info", "_agent_table", "_set_agent_enabled", "_save_config",
+    "_apply_fixes_with_preview",
     "_cached_risk_score", "_findings_to_agent_results", "_empty_staged_output",
     "_finalize_review", "_review_one",
 ]
@@ -213,21 +214,15 @@ def _cmd_check(args):
         sys.exit(2)
     config = load_config()
     results, score = review_file(args.file, config, args.effort, args.fast)
-    all_findings_list = []
-    for r in results:
-        for finding in r.findings:
-            all_findings_list.append({
-                "agent": finding.agent,
-                "severity": finding.severity.value,
-                "category": finding.category,
-                "problem": finding.message,
-                "file": finding.file,
-                "line": finding.line,
-                "suggestion": finding.suggestion,
-                "suggested_code": finding.suggested_code,
-                "confidence": finding.confidence,
-                "rule_id": finding.rule_id,
-            })
+    try:
+        content = Path(args.file).read_text(errors="ignore")
+    except OSError:
+        content = ""
+    all_findings_list = [
+        _finding_to_dict(f, content)
+        for r in results
+        for f in r.findings
+    ]
 
     if args.json:
         output = json_output(results, config, {args.file: score}, args.file)

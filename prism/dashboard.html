@@ -79,6 +79,7 @@ h2 { font-size: 18px; margin: 24px 0 12px; color: #cbd5e1; }
 .finding-loc { color: #64748b; font-size: 12px; }
 .finding-suggestion { color: #94a3b8; margin-top: 4px; font-style: italic; }
 .finding-code { background: #020617; padding: 8px; border-radius: 6px; margin-top: 6px; font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; color: #4ade80; overflow-x: auto; white-space: pre; }
+.finding-code-head { margin-top: 8px; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #64748b; }
 .finding-conf { color: #64748b; font-size: 11px; }
 .no-findings { color: #22c55e; font-size: 13px; padding: 8px 0; }
 .empty { text-align: center; padding: 40px; color: #64748b; }
@@ -225,7 +226,12 @@ function render(data) {
         if (f.problem) html += '<div class="finding-msg">' + escapeHtml(f.problem) + '</div>';
         if (f.file) html += '<div class="finding-loc">' + escapeHtml(f.file) + (f.line ? ':' + f.line : '') + '</div>';
         if (f.suggestion) html += '<div class="finding-suggestion">Suggestion: ' + escapeHtml(f.suggestion) + '</div>';
-        if (f.suggested_code) html += '<div class="finding-code">' + escapeHtml(f.suggested_code) + '</div>';
+        if (f.suggested_code) {
+          const isAI = String(f.agent || '').indexOf('ai_') === 0;
+          const label = isAI ? 'AI suggested code' : 'Suggested fix';
+          html += '<div class="finding-code-head">' + escapeHtml(label) + '</div>';
+          html += '<pre class="finding-code"><code>' + escapeHtml(f.suggested_code) + '</code></pre>';
+        }
         html += '</div>';
       });
     }

@@ -414,10 +414,17 @@ Patterns use `.gitignore` syntax: `*.md`, `docs/`, `/rooted/path.py`, and
 case-insensitive on every platform.
 
 **Skipped by default** (no configuration needed): docs (`*.md`, `*.rst`,
-`*.txt`, `LICENSE*`, `CHANGELOG*`, `CONTRIBUTING*`), assets (`*.png`, `*.jpg`,
-`*.svg`, `*.pdf`, …), lock files (`package-lock.json`, `yarn.lock`,
-`poetry.lock`, `uv.lock`), minified output (`*.min.js`, `*.min.css`) and editor
-noise (`.DS_Store`, `Thumbs.db`).
+`*.txt`, `LICENSE*`, `CHANGELOG*`, `CONTRIBUTING*`), images/media/fonts,
+certificates and keys (`*.pem`, `*.p12`), data (`*.csv`, `*.sql`, `*.db`),
+build output (`build/`, `dist/`, `target/`, `out/`, `bin/`, `obj/`,
+`coverage/`), dependency and cache folders (`node_modules/`, `vendor/`,
+`.venv/`, `__pycache__/`, `.pytest_cache/`), lock files (`package-lock.json`,
+`poetry.lock`, `uv.lock`, `Cargo.lock`, …), generated/minified sources
+(`*.min.js`, `*_pb2.py`, `*.designer.cs`), and editor noise (`.vscode/`,
+`.idea/`, `.DS_Store`, `Thumbs.db`).
+
+`prism ignore reset` restores a short, readable starter list (`.prismignore`),
+not the full default set — the broad rules above always apply underneath.
 
 To keep the list next to the rest of the PRISM config, add an `ignore` array to
 `prism.json` instead — both sources are applied, `.prismignore` first:
@@ -426,6 +433,69 @@ To keep the list next to the rest of the PRISM config, add an `ignore` array to
 {
   "ignore": ["vendor/", "generated/"]
 }
+```
+
+#### `prism mode` — Turn regex and AI agents on or off
+
+```bash
+prism mode                 # Show the current mode
+prism mode regex           # Regex agents only — no API calls
+prism mode none            # No agents at all — reports only
+prism mode all             # Regex + AI agents (default)
+```
+
+| Mode | Regex agents | AI agents | Use for |
+|------|--------------|-----------|---------|
+| `all` | yes | yes | Default. Needs an API key. |
+| `regex` | yes | no | Offline runs, no key, fast pre-commit |
+| `none` | no | no | Skip review entirely, keep reports/dashboard working |
+
+The mode is stored in `prism.json` (`"mode": "regex"`) so it applies to every
+developer and to CI without extra flags.
+
+`--effort lite` still works as a per-invocation override and forces regex-only
+for that run, but it cannot widen `none` — a stored `none` always means nothing
+runs:
+
+```bash
+prism check app.py --effort lite    # regex only for this run
+prism check app.py                  # honours the stored mode
+```
+
+In `none` mode the command still writes an empty report (0 findings, risk 0.0)
+so `prism reports`, `prism dashboard` and `--json` consumers see a valid,
+successful run instead of an error.
+
+#### `prism agents --disable` — Stop one specific regex or AI agent
+
+`prism mode` picks a whole family; `prism agents --disable` switches off a
+single agent and leaves everything else running.
+
+```bash
+prism agents                         # Show every agent and its state
+prism agents --disable ai_quality    # Stop the AI quality agent only
+prism agents --disable quality policy  # Stop two regex agents
+prism agents --enable ai_quality     # Re-enable it
+```
+
+The state is stored in `prism.json` under `"agents"`, either as a list of
+enabled names or as a `{name: bool}` map:
+
+```json
+{
+  "agents": {
+    "ai_quality": false,
+    "quality": false
+  }
+}
+```
+
+Disabling composes with the mode: `mode=regex` plus a disabled `quality`
+runs only the deterministic agents except `quality`.
+
+```bash
+prism agents --disable ai_quality    # Silence a noisy agent
+prism check app.py                   # Everything else still runs
 ```
 
 #### `prism version` — Show version
@@ -547,26 +617,38 @@ The main configuration file. Ships with the repo — never overwritten by `prism
   ],
   "block_on": ["critical", "high"],
   "quality_gates": {
-    "max_complexity": 10,
-    "max_file_length": 500,
+    "max_complexity": 15,
+    "max_file_length": 800,
     "min_coverage": 0
   },
   "confidence_threshold": 0.7,
   "policy": {
     "headers": false
+  },
+  "quality": {
+    "docstrings": false
   }
 }
 ```
 
 | Key | Description |
 |-----|-------------|
-| `agents` | List of agent names to run (remove to disable) |
-| `block_on` | Severity levels that block a commit |
-| `quality_gates.max_complexity` | Max cyclomatic complexity before blocking |
-| `quality_gates.max_file_length` | Max lines per file before blocking |
+| `agents` | List of enabled agent names (or a `{name: bool}` map). `prism agents --disable <name>` toggles one off |
+| `block_on` | Severity levels that block a commit (default: critical and high) |
+| `quality_gates.max_complexity` | Max cyclomatic complexity before blocking (high/critical only) |
+| `quality_gates.max_file_length` | Max lines per file before blocking (high/critical only) |
 | `quality_gates.min_coverage` | Minimum test coverage percentage (`0` disables the gate) |
 | `confidence_threshold` | Minimum confidence (0.0–1.0) for a finding to be reported |
 | `policy.headers` | Require copyright/SPDX headers (`POL-101`, `POL-206`). Off by default |
+| `policy.banned_console` | Flag `console.log` in JS/TS. Off by default |
+| `policy.check_print` | Flag `print()` outside CLI entry points. Off by default |
+| `policy.check_todo_refs` | Enforce `TODO(PROJECT-123)` issue references. Off by default |
+| `quality.docstrings` | Flag missing docstrings (`QUAL-110`). Off by default |
+| `quality.type_hints` | Flag missing return type hints (`QUAL-111`). Off by default |
+| `quality.magic_numbers` | Flag hardcoded numbers (`QUAL-109`). Off by default |
+| `quality.line_length` | Flag lines over 120 chars (`QUAL-105`). Off by default |
+| `quality.todo_markers` | Flag TODO/FIXME/HACK markers (`QUAL-104`). Off by default |
+| `quality.duplication` | Flag repeated 4-line blocks (`QUAL-106`). Off by default |
 
 ### `.prism-policy.json` (Deviation Management)
 
@@ -594,7 +676,7 @@ PRISM runs two layers of review. The **deterministic** regex agents run uncondit
 | Agent | Rule IDs | What It Checks | Blocks? |
 |-------|----------|---------------|---------|
 | `security` | `SECU-XXX` | Secrets (22 patterns), eval(), exec(), os.system(), SQL injection, XSS, CVEs | Yes (critical/high) |
-| `quality` | `QUAL-XXX` | Complexity, duplication, naming, imports, docstrings, type hints | Yes (high complexity) |
+| `quality` | `QUAL-XXX` | File/function length, complexity, naming, imports (docstrings, type hints, magic numbers, TODO markers, duplication are opt-in) | Warns (advisory) |
 | `policy` | `POL-XXX` | SPDX license headers, branch naming, banned patterns, copyright | Warns |
 | `test` | `TST-XXX` | Weak assertions, test naming, coverage measurement | Yes (no tests) |
 | `ai_security` | `SECU-AI-XXX` | AI semantic review of secrets, injection, auth flaws | Depends on severity |
@@ -834,8 +916,9 @@ hackathon/
 │   ├── cli_review.py               # Review orchestration, report formatting
 │   ├── commands_common.py          # Shared helpers for the command handlers
 │   ├── commands_reports.py         # reports, cache, config, stats, dashboard
-│   ├── commands_setup.py           # key, init, hook, version, help, agents, ignore
+│   ├── commands_setup.py           # key, init, hook, version, help, agents, ignore, mode
 │   ├── ignore.py                   # .prismignore parsing + path matching
+│   ├── modes.py                    # all/regex/none mode selection
 │   ├── agents.py                   # BaseAgent, Finding, Severity, Blocker, pipeline
 │   ├── agents_security.py          # Regex: secrets, dangerous patterns (SECU-XXX)
 │   ├── agents_quality.py           # Regex: complexity, naming, imports (QUAL-XXX)

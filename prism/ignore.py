@@ -22,34 +22,172 @@ IGNORE_FILE = ".prismignore"
 # reviewing them produces findings nobody acts on, so the pre-commit hook
 # skips them unless the developer explicitly opts back in.
 DEFAULT_IGNORE = [
-    # Documentation
+    # --- Documentation ---
     "*.md",
+    "*.markdown",
     "*.rst",
+    "*.adoc",
     "*.txt",
+    "*.org",
+    "*.tex",
     "LICENSE*",
+    "LICENCE*",
+    "COPYING*",
+    "NOTICE*",
+    "AUTHORS*",
+    "PATENTS*",
     "CHANGELOG*",
+    "CHANGES*",
+    "HISTORY*",
     "CONTRIBUTING*",
     "CODE_OF_CONDUCT*",
-    # Assets
+    "SECURITY*",
+    # --- Images / media ---
     "*.png",
     "*.jpg",
     "*.jpeg",
     "*.gif",
+    "*.bmp",
+    "*.tif",
+    "*.tiff",
     "*.svg",
     "*.ico",
     "*.webp",
     "*.pdf",
-    # Lock files and generated output
+    "*.mp3",
+    "*.mp4",
+    "*.wav",
+    "*.avi",
+    "*.mov",
+    "*.webm",
+    # --- Fonts ---
+    "*.woff",
+    "*.woff2",
+    "*.ttf",
+    "*.otf",
+    "*.eot",
+    # --- Build output / dependencies ---
+    "build/",
+    "dist/",
+    "out/",
+    "target/",
+    "bin/",
+    "obj/",
+    "coverage/",
+    "htmlcov/",
+    "node_modules/",
+    "vendor/",
+    "third_party/",
+    "Pods/",
+    ".venv/",
+    "venv/",
+    "__pycache__/",
+    ".pytest_cache/",
+    ".mypy_cache/",
+    ".ruff_cache/",
+    ".tox/",
+    "*.egg-info/",
+    # --- Lock files (machine-generated) ---
     "package-lock.json",
     "yarn.lock",
+    "pnpm-lock.yaml",
     "poetry.lock",
     "Pipfile.lock",
     "uv.lock",
+    "composer.lock",
+    "Gemfile.lock",
+    "Cargo.lock",
+    "go.sum",
+    "*.lock",
+    # --- Minified / generated source ---
     "*.min.js",
     "*.min.css",
-    # Editor / OS noise
+    "*.map",
+    "*.pb.go",
+    "*_pb2.py",
+    "*_pb2_grpc.py",
+    "*.designer.cs",
+    "*.generated.cs",
+    "*.generated.ts",
+    # --- Secrets / certificates (never review, never commit) ---
+    "*.pem",
+    "*.key",
+    "*.crt",
+    "*.cer",
+    "*.p12",
+    "*.pfx",
+    "*.jks",
+    "*.keystore",
+    # --- Data / binaries ---
+    "*.zip",
+    "*.tar",
+    "*.gz",
+    "*.tgz",
+    "*.bz2",
+    "*.xz",
+    "*.7z",
+    "*.rar",
+    "*.bin",
+    "*.dat",
+    "*.db",
+    "*.sqlite",
+    "*.sqlite3",
+    "*.sql",
+    "*.dump",
+    "*.csv",
+    "*.tsv",
+    "*.parquet",
+    "*.xlsx",
+    "*.xls",
+    "*.docx",
+    "*.pptx",
+    # --- Editor / OS noise ---
     ".DS_Store",
     "Thumbs.db",
+    "desktop.ini",
+    ".idea/",
+    ".vscode/",
+    "*.swp",
+    "*.swo",
+    "*~",
+    # --- PRISM's own working files ---
+    ".prism-reports/",
+    ".prism-cache.json",
+    ".prism-feedback.json",
+    "dashboard.html",
+]
+
+
+# Written to .prismignore on `prism ignore reset` / `prism init`. The broad
+# rules already live in DEFAULT_IGNORE, so this is the short, readable set a
+# developer sees when they open the file and can edit without reading 120 lines.
+STARTER_IGNORE = [
+    # Documentation
+    "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
+    # Repo metadata that is not source
+    ".gitignore",
+    ".gitattributes",
+    ".editorconfig",
+    # Build output and dependency folders
+    "build/",
+    "dist/",
+    "node_modules/",
+    "vendor/",
+    "__pycache__/",
+    ".venv/",
+    "coverage/",
+    # Editors / OS noise
+    ".vscode/",
+    ".idea/",
+    ".DS_Store",
+    "Thumbs.db",
+    # PRISM's own working files
+    ".prism-reports/",
+    ".prism-cache.json",
+    ".prism-feedback.json",
 ]
 
 
@@ -98,14 +236,18 @@ def _matches(path, pattern):
     ``*.ext`` (basename glob), ``docs/`` (directory prefix), ``/rooted``
     (anchored), ``a/b.py`` (path glob).
     """
-    path = path.replace("\\", "/").lstrip("./")
+    path = path.replace("\\", "/")
+    while path.startswith("./"):
+        path = path[2:]
     if pattern.startswith("!"):
         pattern = pattern[1:]
 
-    # Directory pattern: "docs/" also matches "docs/a/b.py"
+    # Directory pattern: "docs/" also matches "docs/a/b.py" and "pkg/docs/x"
     if pattern.endswith("/"):
         prefix = pattern.rstrip("/")
-        return path == prefix or path.startswith(prefix + "/")
+        return (path == prefix
+                or path.startswith(prefix + "/")
+                or ("/" + prefix + "/") in ("/" + path))
     # No slash: match against the basename (like .gitignore)
     if "/" not in pattern:
         return _fnmatch(path.split("/")[-1], pattern)
@@ -192,6 +334,11 @@ def remove_patterns(patterns):
 
 
 def reset_patterns():
-    """Restore the built-in default ignore list."""
-    write_ignore_file([])
-    return list(DEFAULT_IGNORE)
+    """Restore the starter ignore list.
+
+    The built-in ``DEFAULT_IGNORE`` always applies on top of whatever is in
+    .prismignore, so "reset" means clearing the developer's custom entries
+    back to the shipped starter set (not an empty file).
+    """
+    write_ignore_file(list(STARTER_IGNORE))
+    return list(STARTER_IGNORE)

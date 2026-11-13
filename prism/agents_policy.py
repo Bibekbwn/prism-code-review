@@ -3,6 +3,18 @@ Policy Agent - Checks compliance with project policies,
 license headers, copyright notices, and code ownership rules.
 
 Rule IDs follow SonarQube convention: POL-XXX
+
+These are style/policy preferences, not bugs, so everything here is LOW
+severity and never blocks. The rules that are pure noise on most projects
+(SPDX headers, print(), console.log, TODO(issue-ref) formatting) are off by
+default and opt-in via prism.json:
+
+  "policy": {
+    "headers": true,          # require copyright/SPDX headers
+    "banned_console": true,   # flag console.log in JS/TS
+    "check_print": true,      # flag print() outside CLI entry points
+    "check_todo_refs": true   # enforce TODO(PROJECT-123) format
+  }
 """
 
 import re
@@ -15,30 +27,48 @@ from prism.agents import BaseAgent, Finding, Severity, Blocker, register_agent
 # not use SPDX headers.
 HEADER_CHECKS_ENABLED = False
 
+# Everything that is a preference rather than a defect is opt-in.
+BANNED_CONSOLE_ENABLED = False
+CHECK_PRINT_ENABLED = False
+CHECK_TODO_REFS_ENABLED = False
+
 
 @register_agent
 class PolicyAgent(BaseAgent):
     name = "policy"
     description = "Checks compliance with project policies and standards"
 
-    def __init__(self, require_header: bool = True, allowed_licenses: list = None):
+    def __init__(self, require_header: bool = True, allowed_licenses: list = None,
+               policy: dict = None):
         self.require_header = require_header
         self.allowed_licenses = allowed_licenses or ["MIT", "Apache-2.0", "BSD-3-Clause", "ISC"]
+        self._policy = policy or {}
+
+    @property
+    def policy(self):
+        """Policy options, kept on the instance so tests can inject them."""
+        return self._policy
 
     def _check(self, file_path: str, content: str, diff: str,
                skeleton: str = "", line_count: int = None,
                fast: bool = False) -> List[Finding]:
         findings: List[Finding] = []
         lines = content.split("\n")
+        policy = self._policy
 
-        if (HEADER_CHECKS_ENABLED and self.require_header and file_path.endswith(
+        headers_on = HEADER_CHECKS_ENABLED or policy.get("headers", False)
+        console_on = BANNED_CONSOLE_ENABLED or policy.get("banned_console", False)
+        print_on = CHECK_PRINT_ENABLED or policy.get("check_print", False)
+        todo_refs_on = CHECK_TODO_REFS_ENABLED or policy.get("check_todo_refs", False)
+
+        if (headers_on and self.require_header and file_path.endswith(
             (".py", ".js", ".ts", ".go", ".rs", ".java", ".c", ".cpp", ".h")
         )):
             first_10 = "\n".join(lines[:10])
             if not re.search(r"Copyright\s+\(c\)", first_10):
                 findings.append(Finding(
                     agent=self.name,
-                    severity=Severity.MEDIUM,
+                    severity=Severity.LOW,
                     category="Missing Header",
                     message="Missing copyright notice in file header",
                     file=file_path,
@@ -50,18 +80,24 @@ class PolicyAgent(BaseAgent):
                 ))
 
         banned = [
-            (r"console\.log\(", "Use structured logging instead of console.log", "POL-201"),
             (r"debugger;", "Remove debugger statement", "POL-203"),
             (r"alert\(", "Remove alert() - use proper UI components", "POL-204"),
         ]
+        if console_on:
+            banned.append(
+                (r"console\.log\(", "Use structured logging instead of console.log",
+                 "POL-201")
+            )
         # print() is legitimate in CLI tools and entry points. Only flag it
-        # in library/module code that has no argparse or __main__ guard.
+        # in library/module code that has no argparse or __main__ guard, and
+        # only when the developer opted in.
         is_cli_entry = bool(
             re.search(r'argparse|__main__|def main\b', content)
         )
+        docstrings = _docstring_lines(content)
         for pattern, message, rule_id in banned:
             for i, line in enumerate(lines):
-                if re.search(pattern, line):
+                if _matches_code(pattern, line, i + 1, docstrings):
                     findings.append(Finding(
                         agent=self.name,
                         severity=Severity.LOW,
@@ -74,9 +110,9 @@ class PolicyAgent(BaseAgent):
                         confidence=1.0,
                         rule_id=rule_id,
                     ))
-        if not is_cli_entry:
+        if print_on and not is_cli_entry:
             for i, line in enumerate(lines):
-                if re.search(r'print\(', line):
+                if _matches_code(r'print\(', line, i + 1, docstrings):
                     findings.append(Finding(
                         agent=self.name,
                         severity=Severity.LOW,
@@ -90,25 +126,26 @@ class PolicyAgent(BaseAgent):
                         rule_id="POL-202",
                     ))
 
-        for i, line in enumerate(lines):
-            match = re.search(r'TODO\s*\((\w+)\)', line)
-            if match:
-                issue_ref = match.group(1)
-                if not re.match(r'^[A-Z]+-\d+$', issue_ref):
-                    findings.append(Finding(
-                        agent=self.name,
-                        severity=Severity.LOW,
-                        category="Invalid Issue Reference",
-                        message="TODO references '{}' - use format PROJECT-123".format(issue_ref),
-                        file=file_path,
-                        line=i + 1,
-                        suggestion="Use valid issue tracker reference.",
-                        blocker=Blocker.WARNS,
-                        confidence=0.90,
-                        rule_id="POL-205",
-                    ))
+        if todo_refs_on:
+            for i, line in enumerate(lines):
+                match = re.search(r'TODO\s*\((\w+)\)', line)
+                if match:
+                    issue_ref = match.group(1)
+                    if not re.match(r'^[A-Z]+-\d+$', issue_ref):
+                        findings.append(Finding(
+                            agent=self.name,
+                            severity=Severity.LOW,
+                            category="Invalid Issue Reference",
+                            message="TODO references '{}' - use format PROJECT-123".format(issue_ref),
+                            file=file_path,
+                            line=i + 1,
+                            suggestion="Use valid issue tracker reference.",
+                            blocker=Blocker.WARNS,
+                            confidence=0.90,
+                            rule_id="POL-205",
+                        ))
 
-        if HEADER_CHECKS_ENABLED:
+        if headers_on:
             findings.extend(_check_license_header(content, file_path, self.allowed_licenses))
         findings.extend(_check_branch_naming(file_path))
 
@@ -124,6 +161,74 @@ SPDX_LICENSES = {
     "GPL-3.0": r"GPL[\-\s]?3\.0",
     "MPL-2.0": r"MPL[\-\s]?2\.0",
 }
+
+
+def _strip_literals(line: str) -> str:
+    """Remove single-line string/regex literals so patterns only match code."""
+    out = []
+    i = 0
+    quote = None
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            out.append(" ")
+            i += 1
+            continue
+        if ch == "#":
+            break
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _docstring_lines(content: str) -> set:
+    """Line numbers (1-based) that belong to a module/class/function docstring.
+
+    A per-line stripper cannot know it is inside a triple-quoted block, so a
+    rule word quoted in a docstring (this module's own docs mention
+    `debugger;`) was reported as a real statement.
+    """
+    import ast
+
+    try:
+        tree = ast.parse(content)
+    except (SyntaxError, ValueError):
+        return set()
+
+    lines = set()
+
+    def _mark(node):
+        body = getattr(node, "body", None)
+        if not body:
+            return
+        first = body[0]
+        if (isinstance(first, ast.Expr)
+                and isinstance(first.value, ast.Constant)
+                and isinstance(first.value.value, str)):
+            for n in range(first.lineno, (first.end_lineno or first.lineno) + 1):
+                lines.add(n)
+
+    _mark(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            _mark(node)
+    return lines
+
+
+def _matches_code(pattern, line, lineno=None, docstrings=None):
+    """True when ``pattern`` matches the line's code, ignoring literals."""
+    if docstrings and lineno in docstrings:
+        return False
+    return re.search(pattern, _strip_literals(line)) is not None
 
 
 def _check_license_header(content: str, file_path: str, allowed_licenses: list) -> List[Finding]:

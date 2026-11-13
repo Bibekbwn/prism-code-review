@@ -16,11 +16,12 @@
     "high"
   ],
   "quality_gates": {
-    "max_complexity": 10,
-    "max_file_length": 500,
+    "max_complexity": 15,
+    "max_file_length": 800,
     "min_coverage": 0
   },
   "confidence_threshold": 0.7,
+  "mode": "all",
   "policy": {
     "headers": false
   }

@@ -1,3 +1,134 @@
 # Files PRISM skips during pre-commit review.
 # One pattern per line; '!' re-includes a path. See `prism help ignore`.
+# These are files/folders that do not need code review.
 
+# --- Documentation ---
+README.md
+CHANGELOG.md
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+*.md
+*.markdown
+*.rst
+*.adoc
+*.txt
+
+# --- Build output / dependencies ---
+build/
+dist/
+out/
+target/
+bin/
+obj/
+coverage/
+htmlcov/
+node_modules/
+vendor/
+third_party/
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+*.egg-info/
+
+# --- Lock files (machine-generated) ---
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+poetry.lock
+Pipfile.lock
+uv.lock
+composer.lock
+Gemfile.lock
+Cargo.lock
+go.sum
+*.lock
+
+# --- Minified / generated source ---
+*.min.js
+*.min.css
+*.map
+*.pb.go
+*_pb2.py
+*_pb2_grpc.py
+*.designer.cs
+*.generated.cs
+*.generated.ts
+
+# --- Media / assets ---
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tif
+*.tiff
+*.svg
+*.ico
+*.webp
+*.pdf
+*.mp3
+*.mp4
+*.wav
+*.avi
+*.mov
+*.webm
+
+# --- Data / binaries / archives ---
+*.zip
+*.tar
+*.gz
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.bin
+*.dat
+*.db
+*.sqlite
+*.sqlite3
+*.csv
+*.tsv
+*.parquet
+*.xlsx
+*.xls
+*.docx
+*.pptx
+
+# --- Secrets / certificates (never review) ---
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+*.jks
+*.keystore
+.env
+.env.*
+
+# --- Logs / temp / editor / OS noise ---
+*.log
+*.tmp
+*.bak
+*.orig
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+.cache/
+.terraform/
+
+# --- PRISM's own working files ---
+.prism-reports/
+.prism-cache.json
+.prism-feedback.json
+dashboard.html

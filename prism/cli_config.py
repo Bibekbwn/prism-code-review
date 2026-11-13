@@ -8,6 +8,20 @@ DEFAULT_AGENTS = ["security", "quality", "policy", "test",
 CONFIDENCE_THRESHOLD = 0.7
 
 
+def enabled_agents(config):
+    """Return the list of agents to run from ``config``.
+
+    ``prism.json`` stores agents either as a list of enabled names or as a
+    ``{name: bool}`` map (the shape `prism agents --disable` writes). Both must
+    yield the same enabled set; a plain ``list(config["agents"])`` on a map
+    returns the keys and would run disabled agents.
+    """
+    agents = (config or {}).get("agents", DEFAULT_AGENTS)
+    if isinstance(agents, dict):
+        return [name for name, on in agents.items() if on]
+    return list(agents)
+
+
 def load_config():
     """Load prism.json or .prism.json, falling back to defaults."""
     for name in ["prism.json", ".prism.json"]:
@@ -19,8 +33,8 @@ def load_config():
         "agents": DEFAULT_AGENTS,
         "block_on": ["critical", "high"],
         "quality_gates": {
-            "max_complexity": 10,
-            "max_file_length": 500,
+            "max_complexity": 15,
+            "max_file_length": 800,
             "min_coverage": 0,
         },
         "confidence_threshold": CONFIDENCE_THRESHOLD,

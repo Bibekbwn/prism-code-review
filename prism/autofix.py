@@ -84,6 +84,10 @@ def _classify_fix(finding: Finding) -> str:
         return "remove_debugger"
     if rule_id == "POL-202":
         return "add_logging"
+    # QUAL-110 is "missing docstring": a real docstring needs the function's
+    # purpose, which cannot be invented from the name. `add_test_docstring`
+    # only ever applied to TST-102, and routing QUAL-110 here produced a
+    # suggestion that just echoed the def line back.
     if rule_id == "TST-102":
         return "add_test_docstring"
 
@@ -97,9 +101,10 @@ def _classify_fix(finding: Finding) -> str:
         return "remove_console_log"
     if re.search(r"\bprint\s*\(", msg):
         return "add_logging"
-    if re.search(r"\b(api[_-]?key|secret|password|passwd|pwd|token)\b", msg):
+    if re.search(r"\b(api[_-]?secret|secret|password|passwd|pwd|token)\b", msg):
         return "replace_secret"
-    if re.search(r"\bdocstring\b", msg):
+    # "docstring" alone is not enough: only test docstrings can be generated.
+    if re.search(r"\bdocstring\b", msg) and "test" in msg:
         return "add_test_docstring"
 
     return "unknown"
@@ -160,8 +165,17 @@ def _replace_print_with_logging(line: str, finding: Finding) -> str:
 
 
 def _remove_debugger(line: str, finding: Finding) -> str:
-    """Remove debugger statement."""
-    return re.sub(r'\bdebugger;', '# debugger removed', line)
+    """Comment out a debugger statement.
+
+    Only matches `debugger;` when it is the statement itself, not when the
+    text appears inside a string or regex literal (e.g. a rule definition
+    containing the word "debugger"), which would corrupt the line.
+    """
+    # A quoted literal before the keyword means it is data, not code.
+    stripped = line.lstrip()
+    if stripped.startswith(('"', "'", "r'", 'r"', "b'", 'b"', "f'", 'f"')):
+        return line
+    return re.sub(r'^(\s*)debugger;', r'\1# debugger removed', line)
 
 
 def _comment_out(line: str, finding: Finding) -> str:
