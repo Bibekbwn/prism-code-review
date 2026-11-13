@@ -8,16 +8,36 @@ API shape so pipeline code never branches on provider.
 
 import os
 import json
+import re
 import time
+import random
 import logging
 import importlib
+import concurrent.futures
 
-API_TIMEOUT = 120
-MAX_RETRIES = 3
+# Per-attempt wall-clock cap. A provider that accepts the socket but never
+# answers (or an HTTP client that ignores its timeout) must not stall the CLI
+# for minutes: every attempt is abandoned after this many seconds.
+API_TIMEOUT = int(os.getenv("PRISM_API_TIMEOUT", "30"))
+MAX_RETRIES = int(os.getenv("PRISM_MAX_RETRIES", "2"))
 MAX_CONTENT_CHARS = 16000
+
+# Retry pacing: exponential backoff with jitter, capped by a total budget so a
+# bad provider cannot stall the CLI. Defaults keep a single flaky call well
+# under a second of sleeping while still absorbing transient 504s.
+RETRY_BASE_DELAY = float(os.getenv("PRISM_RETRY_BASE_DELAY", "0.2"))
+RETRY_MAX_DELAY = float(os.getenv("PRISM_RETRY_MAX_DELAY", "1.0"))
+RETRY_BUDGET = float(os.getenv("PRISM_RETRY_BUDGET", "5"))
+
+# Simple circuit breaker: after repeated failures, fail fast for a cooldown
+# instead of making every agent wait through the full retry ladder.
+CIRCUIT_THRESHOLD = int(os.getenv("PRISM_CIRCUIT_THRESHOLD", "5"))
+CIRCUIT_COOLDOWN = float(os.getenv("PRISM_CIRCUIT_COOLDOWN", "60"))
 
 _logger = logging.getLogger(__name__)
 _no_key_warned = False
+_circuit_failures = 0
+_circuit_open_until = 0.0
 
 
 def _warn_no_key(provider, env_var):
@@ -118,7 +138,13 @@ def _call_fn(model, system_prompt, file_path, content, agent_name,
     prompt = _build_prompt(system_prompt, file_path, content, skeleton, cross_file_context)
 
     def _do_generate(prompt_text, _timeout=timeout):
-        response = model.generate_content(prompt_text, request_options={"timeout": _timeout})
+        # Ask for JSON at the API level: it removes the markdown fences and
+        # prose preambles that used to make chunked reviews fail parsing.
+        response = model.generate_content(
+            prompt_text,
+            generation_config={"response_mime_type": "application/json"},
+            request_options={"timeout": _timeout},
+        )
         return response.text or "{}"
 
     return _call_with_retry(_do_generate, prompt, agent_name, timeout)
@@ -164,26 +190,143 @@ def _call_openai(model, system_prompt, file_path, content, agent_name,
     return _call_with_retry(_do_call, None, agent_name, timeout)
 
 
-def _call_with_retry(call_fn, prompt, agent_name, timeout):
-    """Shared retry + JSON parse logic for all providers."""
-    for attempt in range(MAX_RETRIES + 1):
+def _parse_json_response(text):
+    """Extract a JSON object from a model response.
+
+    Models sometimes wrap JSON in prose or markdown fences, or emit trailing
+    commas. Return the parsed dict, or None if no valid object is present.
+    """
+    if not text:
+        return None
+    cleaned = str(text).replace("```json", "").replace("```", "").strip()
+    try:
+        return json.loads(cleaned)
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    candidate = cleaned[start:end + 1]
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        pass
+    repaired = re.sub(r",\s*([}\]])", r"\1", candidate)
+    try:
+        return json.loads(repaired)
+    except json.JSONDecodeError:
+        return None
+
+
+def _circuit_open():
+    return time.monotonic() < _circuit_open_until
+
+
+def _record_failure():
+    global _circuit_failures, _circuit_open_until
+    _circuit_failures += 1
+    if _circuit_failures >= CIRCUIT_THRESHOLD:
+        _circuit_open_until = time.monotonic() + CIRCUIT_COOLDOWN
+        _logger.error(
+            "Provider circuit opened after %d consecutive failures; "
+            "pausing AI calls for %ds", _circuit_failures, int(CIRCUIT_COOLDOWN)
+        )
+
+
+def _record_success():
+    global _circuit_failures, _circuit_open_until
+    _circuit_failures = 0
+    _circuit_open_until = 0.0
+
+
+def _retry_delay(attempt, deadline):
+    """Backoff with jitter, never sleeping past the total retry budget."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return 0.0
+    delay = min(RETRY_MAX_DELAY, RETRY_BASE_DELAY * (2 ** attempt))
+    delay = min(delay, remaining)
+    jitter_cap = min(0.1, max(0.0, remaining - delay))
+    return delay + random.uniform(0, jitter_cap)
+
+
+def _invoke_with_deadline(call_fn, prompt, timeout):
+    """Run a provider call in a worker thread and abandon it after `timeout`.
+
+    The provider SDK's own timeout is not always honoured (a hung TCP
+    connection can block past it), and the retry ladder cannot help while the
+    first call is still running. Bounding the wall clock here keeps every
+    agent's worst case at `(MAX_RETRIES + 1) * timeout`.
+    """
+    if prompt is not None:
+        def _run():
+            return call_fn(prompt)
+    else:
+        def _run():
+            return call_fn()
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(_run)
+    try:
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        _logger.error("provider call exceeded %.0fs; abandoning attempt", timeout)
+        raise TimeoutError("provider call exceeded {:.0f}s".format(timeout))
+    finally:
         try:
-            text = call_fn(prompt) if prompt is not None else call_fn()
-            text = (text or "{}").replace("```json", "").replace("```", "").strip()
-            return json.loads(text)
-        except json.JSONDecodeError:
-            return {"findings": [], "summary": "Parse error"}
+            executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:  # Python < 3.9 has no cancel_futures
+            executor.shutdown(wait=False)
+
+
+def _call_with_retry(call_fn, prompt, agent_name, timeout):
+    """Shared retry + JSON parse logic for all providers.
+
+    Retries on transport errors *and* malformed JSON, with capped backoff and
+    a circuit breaker. Always returns a dict; failures carry `_failed`.
+    """
+    deadline = time.monotonic() + RETRY_BUDGET
+    last_error = "unknown error"
+    error_kind = "transport"
+    attempts = 0
+
+    for attempt in range(MAX_RETRIES + 1):
+        attempts += 1
+        if _circuit_open():
+            _logger.error("%s skipped: provider circuit is open", agent_name)
+            return {"findings": [], "summary": "Provider temporarily unavailable",
+                    "_failed": True, "_error": "provider circuit is open",
+                    "_error_kind": "circuit_open"}
+
+        attempt_timeout = max(1.0, timeout or API_TIMEOUT)
+        try:
+            text = _invoke_with_deadline(call_fn, prompt, attempt_timeout)
+            data = _parse_json_response(text)
+            if data is not None:
+                _record_success()
+                return data
+            last_error = "model did not return valid JSON"
+            error_kind = "invalid_json"
         except Exception as exc:
-            if attempt < MAX_RETRIES:
-                wait = 2 ** attempt
-                _logger.warning(
-                    "%s attempt %d/%d failed: %s. Retrying in %ds...",
-                    agent_name, attempt + 1, MAX_RETRIES + 1, exc, wait
-                )
-                time.sleep(wait)
-            else:
-                _logger.error(
-                    "%s failed after %d attempts: %s",
-                    agent_name, MAX_RETRIES + 1, exc
-                )
-    return {"findings": [], "summary": "API error after {} attempts".format(MAX_RETRIES + 1)}
+            last_error = str(exc)
+            error_kind = "transport"
+
+        if attempt >= MAX_RETRIES:
+            break
+
+        delay = _retry_delay(attempt, deadline)
+        if delay <= 0:
+            _logger.warning("%s retry budget exhausted after %s", agent_name, last_error)
+            break
+        _logger.warning(
+            "%s attempt %d/%d failed: %s. Retrying in %.1fs...",
+            agent_name, attempt + 1, MAX_RETRIES + 1, last_error, delay
+        )
+        time.sleep(delay)
+
+    _record_failure()
+    message = "API error after {} attempt(s): {}".format(attempts, last_error)
+    return {"findings": [], "summary": message, "_failed": True, "_error": message,
+            "_error_kind": error_kind}

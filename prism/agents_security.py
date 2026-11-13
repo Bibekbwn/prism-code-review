@@ -12,8 +12,10 @@ from prism.agents import BaseAgent, Finding, Severity, Blocker, register_agent
 
 SECRET_PATTERNS = [
     (r'(?i)(api[_-]?key|apikey)\s*[:=]\s*["\']([A-Za-z0-9_\-]{16,})["\']', "API Key", "SECU-101"),
-    (r'(?i)(secret[_-]?key|secretkey)\s*[:=]\s*["\']([A-Za-z0-9_\-]{16,})["\']', "Secret Key", "SECU-102"),
-    (r'(?i)^(?:\s*)(?:password|passwd|pwd)\s*[:=]\s*["\']([^\s\'\"\n]{8,})["\']', "Password", "SECU-103"),
+    # Prefixed names are the norm in real config (DB_PASSWORD, STRIPE_SECRET,
+    # SESSION_KEY); requiring the bare name at line start missed them all.
+    (r'(?i)(secret[_-]?key|secretkey|session[_-]?key|sessionkey)\s*[:=]\s*["\']([A-Za-z0-9_\-]{16,})["\']', "Secret Key", "SECU-102"),
+    (r'(?i)^\s*(?:[A-Za-z0-9]+[_-])?(?:password|passwd|pwd)\s*[:=]\s*["\']([^\s\'\"\n]{8,})["\']', "Password", "SECU-103"),
     (r'(?i)(token|access_token)\s*[:=]\s*["\']([A-Za-z0-9_\-\.]{20,})["\']', "Auth Token", "SECU-104"),
     (r'AKIA[0-9A-Z]{16}', "AWS Access Key ID", "SECU-105"),
     (r'(?i)(github|gitlab)_token\s*[:=]\s*["\']([A-Za-z0-9_\-]{20,})["\']', "Git Token", "SECU-106"),
@@ -22,7 +24,9 @@ SECRET_PATTERNS = [
     # --- Gitleaks-style provider-specific secrets (researched from gitleaks, trufflehog, detect-secrets) ---
     (r'(?i)slack[_-]?token\s*[:=]\s*["\']([xox[baprs]-[A-Za-z0-9\-]{10,})["\']', "Slack Token", "SECU-109"),
     (r'(?i)slack[_-]?webhook\s*[:=]\s*["\'](https://hooks\.slack\.com/services/[A-Za-z0-9/]+)["\']', "Slack Webhook URL", "SECU-110"),
-    (r'(?i)(sk|pk)_(live|test)_[A-Za-z0-9]{24,}', "Stripe Key", "SECU-111"),
+    # Real Stripe test keys are ~16 chars after the prefix (sk_test_51H8...),
+    # so a 24-char minimum let them through.
+    (r'(?i)(sk|pk)_(live|test)_[A-Za-z0-9]{12,}', "Stripe Key", "SECU-111"),
     (r'(?i)twilio[_-]?(auth[_-]?token|sid)\s*[:=]\s*["\']([A-Za-z0-9]{20,})["\']', "Twilio Credential", "SECU-112"),
     (r'(?i)sendgrid[_-]?api[_-]?key\s*[:=]\s*["\']([A-Za-z0-9_\-\.]{20,})["\']', "SendGrid API Key", "SECU-113"),
     (r'(?i)(google[_-]?api[_-]?key|gcp[_-]?key)\s*[:=]\s*["\']([A-Za-z0-9_\-]{20,})["\']', "Google API Key", "SECU-114"),
@@ -34,6 +38,10 @@ SECRET_PATTERNS = [
     (r'(?i)(auth[_-]?token|authtoken)\s*[:=]\s*["\']([A-Za-z0-9_\-\.]{16,})["\']', "Auth Token (generic)", "SECU-120"),
     (r'(?i)(client[_-]?secret)\s*[:=]\s*["\']([^\s\'\"\n]{16,})["\']', "Client Secret", "SECU-121"),
     (r'(?i)(access[_-]?key[_-]?id)\s*[:=]\s*["\']([A-Za-z0-9]{16,})["\']', "Access Key ID", "SECU-122"),
+    # Unquoted dotenv-style assignments (PASSWORD=hunter2). Quoted values are
+    # covered by the provider-specific patterns above; this catches .env files,
+    # which are the most common place for real secrets to leak.
+    (r'(?i)^\s*(?:\w+[_-])?(?:api[_-]?key|apikey|secret[_-]?(?:access[_-]?)?key|secretkey|password|passwd|pwd|token|access[_-]?key[_-]?id|access[_-]?token|auth[_-]?token|client[_-]?secret)\s*[:=]\s*([^\s"\']{6,})\s*$', "Unquoted Dotenv Secret", "SECU-123"),
 ]
 
 # Gitleaks-style false-positive filtering, split into two tiers:

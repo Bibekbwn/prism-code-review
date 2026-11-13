@@ -1,55 +1,50 @@
 """PRISM CLI entry point.
 
-This module is a thin facade. The implementation is split across:
-  - cli_config.py  : config, git helpers, deviation policy
-  - cli_review.py  : review orchestration, report formatting, JSON output
-  - cli_commands.py: argparse setup + command dispatch + self-tests
+This module is a thin facade: it builds the argparse parser and dispatches to
+the command handlers. The implementation is split across:
+  - cli_config.py      : config, git helpers, deviation policy
+  - cli_review.py      : review orchestration, report formatting, JSON output
+  - cli_commands.py    : check / check-staged / check-diff, self-tests
+  - commands_common.py : helpers shared by the command handlers
+  - commands_reports.py: reports, cache, config, stats, dashboard
+  - commands_setup.py  : key, init, hook, version, help, agents
 
 Importing this module runs the @register_agent decorators for the
 deterministic regex agents so they are available alongside the AI agents.
 """
 
 import argparse
-import os
-import shutil
 import sys
 from pathlib import Path
 
 # Add parent directory to path so prism imports work when run as executable
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Load .env file if it exists (for GEMINI_API_KEY and other settings)
-try:
-    from dotenv import load_dotenv
-    for env_path in [
-        Path(__file__).parent.parent.parent / ".env",
-        Path(__file__).parent.parent / ".env",
-        Path(__file__).parent.parent / ".config" / ".env",
-        Path.cwd() / ".env",
-        Path.cwd() / ".config" / ".env",
-    ]:
-        if env_path.exists():
-            load_dotenv(env_path)
-            break
-except ImportError:
-    pass
+# Load .env file if it exists (for GEMINI_API_KEY and other settings).
+# prism/__init__.py already does this at package import; the call is kept
+# explicit (and idempotent) so this module works even if imported oddly.
+from prism import load_env as _load_env
+_load_env()
 
 # Importing these modules runs their @register_agent decorators so the
 # deterministic regex agents are available alongside the AI agents.
-from prism import agents_security, agents_quality, agents_policy, agents_test
-from prism.logging_config import logger
+from prism import agents_policy, agents_quality, agents_security, agents_test
 
-from prism.cli_config import (
-    DEFAULT_AGENTS, CONFIDENCE_THRESHOLD, load_config, load_deviation_policy,
-    get_staged_files, run_changed_tests, get_file_diff, is_deviation,
-)
-from prism.cli_review import review_file, format_report, json_output
+_registered_agents = (agents_policy, agents_quality, agents_security,
+                      agents_test)
+
 from prism.cli_commands import (
-    _run_self_tests, _run_benchmark, _cmd_agents, _cmd_help, _cmd_version,
-    _cmd_uninstall_hook, _cmd_stats, _cmd_config, _cmd_init, _cmd_install_hook,
-    _cmd_policy, _cmd_feedback, _cmd_suppressed, _cmd_reports, _cmd_dashboard,
-    _cmd_report, _cmd_delete_report, _cmd_clear_reports, _cmd_cache,
-    _cmd_check, _cmd_check_staged, _cmd_key,
+    _run_self_tests, _run_benchmark, _cmd_check, _cmd_check_staged,
+    _cmd_check_diff,
+)
+from prism.commands_reports import (
+    _cmd_reports, _cmd_report, _cmd_delete_report, _cmd_clear_reports,
+    _cmd_dashboard, _cmd_stats, _cmd_config, _cmd_policy, _cmd_feedback,
+    _cmd_suppressed, _cmd_cache,
+)
+from prism.commands_setup import (
+    _cmd_key, _cmd_init, _cmd_install_hook, _cmd_uninstall_hook, _cmd_version,
+    _cmd_help, _cmd_agents, _cmd_ignore,
 )
 
 
@@ -67,6 +62,8 @@ def build_parser():
     check = sub.add_parser("check", help="Review a file")
     check.add_argument("file", help="File to review")
     check.add_argument("--fix", action="store_true", help="Apply auto-fixable changes")
+    check.add_argument("--yes", action="store_true",
+                       help="Apply --fix changes without the confirmation prompt")
     check.add_argument("--json", action="store_true", help="Output results as JSON")
     check.add_argument("--prompt", action="store_true",
                        help="Ask developer about medium/low findings")
@@ -87,6 +84,19 @@ def build_parser():
                               help="Open visual dashboard after review")
     check_staged.add_argument("--test", action="store_true",
                               help="Run pytest on changed Python files before review")
+    check_staged.add_argument("--no-dashboard", action="store_true",
+                              help="Do not open the HTML dashboard after review")
+
+    check_diff = sub.add_parser(
+        "check-diff", aliases=["diff"],
+        help="Review the diff against a base branch (PR review)")
+    check_diff.add_argument("--base", default="origin/main",
+                            help="Base ref to diff against (default: origin/main)")
+    check_diff.add_argument("--json", action="store_true", help="Output results as JSON")
+    check_diff.add_argument("--effort", choices=["lite", "balanced", "max"],
+                            default="balanced", help="AI review effort level")
+    check_diff.add_argument("--fast", action="store_true",
+                            help="Use two-pass summarization for large files")
 
     sub.add_parser("init", help="Create prism.json config")
     sub.add_parser("install-hook", help="Install pre-commit hook")
@@ -110,6 +120,16 @@ def build_parser():
     sub.add_parser("version", help="Show PRISM version")
     sub.add_parser("uninstall-hook", help="Remove pre-commit hook")
     sub.add_parser("stats", help="Show review statistics")
+
+    ignore_cmd = sub.add_parser(
+        "ignore",
+        help="Manage files skipped by pre-commit review (.prismignore)")
+    ignore_cmd.add_argument("action",
+                            choices=["list", "add", "remove", "reset"],
+                            nargs="?", default="list",
+                            help="What to do (default: list)")
+    ignore_cmd.add_argument("patterns", nargs="*",
+                            help="Pattern(s) to add or remove")
 
     config_cmd = sub.add_parser("config", help="Show or manage configuration")
     config_cmd.add_argument("--set", nargs=2, metavar=("KEY", "VALUE"),
@@ -159,18 +179,14 @@ _COMMANDS = {
     "cache": _cmd_cache,
     "check": _cmd_check,
     "check-staged": _cmd_check_staged,
+    "check-diff": _cmd_check_diff,
+    "diff": _cmd_check_diff,  # documented alias for check-diff
     "test": _run_self_tests,
     "benchmark": _run_benchmark,
     "key": _cmd_key,
+    "ignore": _cmd_ignore,
 }
 
-
-# Backwards-compatible re-exports for code that imports from prism.cli
-from prism.cli_commands import (
-    _json_output_staged as _json_output_staged,
-    _review_one as _review_one,
-)
-_json_output = json_output
 
 def main():
     parser = build_parser()

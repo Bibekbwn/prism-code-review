@@ -9,6 +9,12 @@ import re
 from typing import List
 from prism.agents import BaseAgent, Finding, Severity, Blocker, register_agent
 
+# Copyright/SPDX header checks are opt-in via prism.json:
+#   "policy": {"headers": true}
+# They fired on every source file, which is pure noise for projects that do
+# not use SPDX headers.
+HEADER_CHECKS_ENABLED = False
+
 
 @register_agent
 class PolicyAgent(BaseAgent):
@@ -25,9 +31,9 @@ class PolicyAgent(BaseAgent):
         findings: List[Finding] = []
         lines = content.split("\n")
 
-        if self.require_header and file_path.endswith(
+        if (HEADER_CHECKS_ENABLED and self.require_header and file_path.endswith(
             (".py", ".js", ".ts", ".go", ".rs", ".java", ".c", ".cpp", ".h")
-        ):
+        )):
             first_10 = "\n".join(lines[:10])
             if not re.search(r"Copyright\s+\(c\)", first_10):
                 findings.append(Finding(
@@ -102,7 +108,8 @@ class PolicyAgent(BaseAgent):
                         rule_id="POL-205",
                     ))
 
-        findings.extend(_check_license_header(content, file_path, self.allowed_licenses))
+        if HEADER_CHECKS_ENABLED:
+            findings.extend(_check_license_header(content, file_path, self.allowed_licenses))
         findings.extend(_check_branch_naming(file_path))
 
         return findings

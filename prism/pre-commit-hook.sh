@@ -6,8 +6,11 @@
 
 echo "PRISM: Running pre-commit review..."
 
-# Run PRISM on staged changes with interactive prompts for medium/low findings
-python -m prism.cli check-staged --prompt --json
+# Run PRISM on staged changes. Human-readable report (not --json): the
+# developer must be able to read the findings before the commit is blocked.
+# The visual dashboard opens automatically after the review (see --no-dashboard
+# or PRISM_NO_DASHBOARD to opt out on headless machines).
+python -m prism.cli check-staged --prompt
 EXIT_CODE=$?
 
 # Show report interface after review completes

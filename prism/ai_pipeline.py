@@ -11,12 +11,53 @@ import time
 import logging
 import concurrent.futures
 
-from prism.ai_providers import get_model
-from prism.ai_findings import parse_findings, verify_findings
+from prism.ai_providers import get_model, API_TIMEOUT
+from prism.ai_findings import parse_findings, verify_findings, _AGENT_PREFIX
+from prism.agents import Finding, Severity, Blocker
 
 logger = logging.getLogger(__name__)
 
 CHUNK_OVERLAP = 20
+
+
+def _error_finding(agent_name, file_path, message, blocking=False):
+    """Surface an AI failure as a visible finding.
+
+    Silently returning [] made a failed agent look like a clean review. A
+    provider outage (transport error, 504, invalid JSON) is blocking: letting
+    it pass means the gate reports "clean" for a review that never happened.
+    A missing API key is not an outage -- it is an unconfigured install -- so
+    it stays non-blocking and only bites when AI review was requested.
+    """
+    prefix = _AGENT_PREFIX.get(agent_name, agent_name.upper()[:4])
+    return Finding(
+        agent=agent_name,
+        severity=Severity.HIGH if blocking else Severity.LOW,
+        category="AI Error",
+        message=message,
+        file=file_path,
+        line=None,
+        suggestion="Check the provider, API key, and network, then re-run.",
+        blocker=Blocker.BLOCKS if blocking else Blocker.ALLOWS,
+        confidence=1.0,
+        rule_id="{}-AI-ERR".format(prefix),
+    )
+
+
+def _failed_message(result):
+    """Return (error, blocking) if the provider call failed, else (None, False).
+
+    A provider outage -- transport error, timeout, open circuit -- blocks:
+    the review never happened, so "no findings" would be a lie. A model that
+    answered with prose instead of JSON is a formatting problem, not an
+    outage; retrying already happened, and one chatty chunk must not fail an
+    otherwise clean review.
+    """
+    if isinstance(result, dict) and result.get("_failed"):
+        message = str(result.get("_error") or result.get("summary") or "unknown error")
+        blocking = result.get("_error_kind") != "invalid_json"
+        return message, blocking
+    return None, False
 
 # File-size tiers: (threshold_lines, timeout_multiplier, whole_file_agents)
 TIERS = [
@@ -102,7 +143,8 @@ def review_with_agent(system_prompt, file_path, content, agent_name,
     model, provider, call_fn = get_model()
     if model is None:
         logger.info("%s skipped: no API key for provider", agent_name)
-        return []
+        return [_error_finding(agent_name, file_path,
+                               "no API key configured for provider")]
 
     if line_count is None:
         line_count = content.count("\n") + 1
@@ -119,7 +161,7 @@ def review_with_agent(system_prompt, file_path, content, agent_name,
     tier_multiplier, whole_file_agents = get_tier_for_file(line_count)
     needs_whole_file = agent_name in whole_file_agents
 
-    timeout = int(120 * tier_multiplier)
+    timeout = min(120, int(API_TIMEOUT * tier_multiplier))
     env_timeout = os.getenv("PRISM_TIMEOUT")
     if env_timeout:
         try:
@@ -132,6 +174,12 @@ def review_with_agent(system_prompt, file_path, content, agent_name,
         if len(chunks) == 1:
             result = call_fn(model, system_prompt, file_path,
                              content, agent_name, skeleton, timeout, cross_file_context)
+            error, blocking = _failed_message(result)
+            if error:
+                logger.error("%s failed: %s", agent_name, error)
+                return [_error_finding(agent_name, file_path,
+                                       "{} failed: {}".format(agent_name, error),
+                                       blocking=blocking)]
             raw = parse_findings(result, file_path, agent_name)
             return verify_findings(raw, file_path, content)
 
@@ -149,6 +197,12 @@ def review_with_agent(system_prompt, file_path, content, agent_name,
                 model, system_prompt, file_path,
                 prompt_content, agent_name, skeleton, timeout, cross_file_context,
             )
+            error, blocking = _failed_message(result)
+            if error:
+                logger.error("%s failed: %s", agent_name, error)
+                return [_error_finding(agent_name, file_path,
+                                       "{} failed: {}".format(agent_name, error),
+                                       blocking=blocking)]
             raw = parse_findings(result, file_path, agent_name)
             return verify_findings(raw, file_path, content)
 
@@ -157,17 +211,31 @@ def review_with_agent(system_prompt, file_path, content, agent_name,
             agent_name, line_count, len(chunks), timeout
         )
         all_findings = []
+        chunk_failed = None
         for chunk_start, chunk_text in chunks:
             chunk_skeleton = skeleton if skeleton else ""
             result = call_fn(
                 model, system_prompt, file_path,
                 chunk_text, agent_name, chunk_skeleton, timeout, cross_file_context,
             )
+            error, blocking = _failed_message(result)
+            if error:
+                logger.error("%s chunk at line %d failed: %s",
+                             agent_name, chunk_start, error)
+                if chunk_failed is None:
+                    chunk_failed = (error, blocking)
+                continue
             findings = parse_findings(result, file_path, agent_name)
             for f in findings:
                 if f.line:
                     f.line = f.line + chunk_start - 1
             all_findings.extend(findings)
+
+        if chunk_failed and not all_findings:
+            error, blocking = chunk_failed
+            return [_error_finding(agent_name, file_path,
+                                   "{} failed: {}".format(agent_name, error),
+                                   blocking=blocking)]
 
         seen = set()
         deduped = []
@@ -180,7 +248,9 @@ def review_with_agent(system_prompt, file_path, content, agent_name,
 
     except Exception as exc:
         logger.error("%s pipeline failed: %s", agent_name, exc)
-        return []
+        return [_error_finding(agent_name, file_path,
+                               "{} pipeline failed: {}".format(agent_name, exc),
+                               blocking=True)]
 
 
 def _summarize_chunks(model, chunks, file_path, skeleton, timeout, call_fn=None, provider="gemini"):
@@ -189,7 +259,7 @@ def _summarize_chunks(model, chunks, file_path, skeleton, timeout, call_fn=None,
         "Summarize this code chunk in 1-2 sentences. "
         "Focus on: what functions/classes exist, what they do, "
         "and any notable patterns (security, performance, policy). "
-        "Return ONLY the summary, no JSON, no markdown.\n\n"
+        'Return ONLY JSON of the form {"summary": "..."}.\n\n'
     )
     if skeleton:
         summary_prompt += "File structure:\n{}\n\n".format(skeleton)
@@ -222,7 +292,9 @@ def _safe_generate(model, prompt, timeout, call_fn=None, provider="gemini"):
     for attempt in range(4):
         try:
             if call_fn is not None:
-                result = call_fn(model, "", "", "", "summarize", "", timeout, "")
+                # Pass the prompt as the content argument; the provider
+                # dispatch builds the final request from it.
+                result = call_fn(model, "", "", prompt, "summarize", "", timeout, "")
                 if isinstance(result, dict):
                     return (result.get("summary") or "").strip()
                 return str(result).strip()

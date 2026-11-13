@@ -20,5 +20,8 @@
     "max_file_length": 500,
     "min_coverage": 0
   },
-  "confidence_threshold": 0.7
+  "confidence_threshold": 0.7,
+  "policy": {
+    "headers": false
+  }
 }

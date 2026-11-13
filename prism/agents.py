@@ -107,8 +107,14 @@ def run_pipeline(agents: List[str], file_path: str, content: str,
     return results
 
 
-def risk_score(file_path: str, content: str, diff: str) -> float:
-    """Score 0.0 (low risk) to 1.0 (high risk) based on file characteristics."""
+def risk_score(file_path: str, content: str, diff: str, findings=None) -> float:
+    """Score 0.0 (low risk) to 1.0 (high risk) for a file.
+
+    Combines file characteristics with the severity of what was actually
+    found: a tiny file with a critical finding is high risk, so a 0.0 score
+    next to a blocking finding (which read as a contradiction to CI
+    consumers) cannot happen any more.
+    """
     score = 0.0
     name = file_path.lower()
 
@@ -130,28 +136,43 @@ def risk_score(file_path: str, content: str, diff: str) -> float:
     if file_path.endswith((".md", ".rst", ".txt", ".yaml", ".yml", ".json")):
         score -= 0.1
 
-    return max(0.0, min(1.0, score))
+    weight = {Severity.CRITICAL: 0.25, Severity.HIGH: 0.1,
+              Severity.MEDIUM: 0.03, Severity.LOW: 0.0, Severity.INFO: 0.0}
+    for f in findings or []:
+        score += weight.get(f.severity, 0.0)
+
+    return round(max(0.0, min(1.0, score)), 2)
 
 
 def quality_gates_met(results: List[AgentResult], config: dict) -> bool:
-    """Check if all quality gates pass."""
+    """Check if all quality gates pass.
+
+    A blocking finding means the change is not safe to commit, so it fails
+    the gate as well; otherwise ``quality_gates_passed`` could be true while
+    the review is blocked, which reads as a contradiction in JSON output.
+    """
     gates = config.get("quality_gates", {})
+    blocking_sev = set(config.get("block_on", ["critical", "high"]))
     all_findings = [f for r in results for f in r.findings]
 
+    for f in all_findings:
+        if f.blocker == Blocker.BLOCKS and f.severity.value in blocking_sev:
+            return False
+
     max_complexity = gates.get("max_complexity")
-    if max_complexity is not None:
+    if max_complexity:
         for f in all_findings:
             if f.category == "Complexity" and f.severity in (Severity.HIGH, Severity.CRITICAL):
                 return False
 
     max_file_length = gates.get("max_file_length")
-    if max_file_length is not None:
+    if max_file_length:
         for f in all_findings:
             if f.category == "File Length":
                 return False
 
     min_coverage = gates.get("min_coverage")
-    if min_coverage is not None:
+    if min_coverage:
         for f in all_findings:
             if f.category == "Missing Tests":
                 return False

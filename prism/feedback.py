@@ -7,13 +7,11 @@ Coverage: runs tests and measures coverage (like CodeRabbit sandboxed execution)
 """
 
 import json
-import os
 import re
 import subprocess
-import urllib.request
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -187,8 +185,6 @@ def _version_gte(version: str, min_version: str) -> bool:
     return True
 
 
-import subprocess
-
 # Process-level cache: running pytest twice (collect + execute) on every
 # single file review made the LSP server take 5.6s per file. Coverage is a
 # whole-repo property, not a per-file one, so we cache it for the process.
@@ -256,64 +252,3 @@ def measure_coverage(project_dir: str = ".") -> dict:
 
     _coverage_cache = result
     return result
-
-    return result
-
-
-def query_nvd_api(package_name: str, version: str) -> List[dict]:
-    """
-    Query NVD API for known CVEs affecting a package version.
-    
-    Uses NVD API 2.0: https://services.nvd.nist.gov/rest/json/cves/2.0
-    Requires NVD_API_KEY environment variable (free at nvd.nist.gov).
-    Falls back to empty list if no key is set.
-    """
-    api_key = os.getenv("NVD_API_KEY")
-    if not api_key:
-        return []
-
-    try:
-        url = (
-            "https://services.nvd.nist.gov/rest/json/cves/2.0"
-            "?keywordResults={}&resultsPerPage=5"
-        ).format(package_name)
-        req = urllib.request.Request(url, headers={
-            "apiKey": api_key,
-            "User-Agent": "PRISM-SCA/1.0",
-        })
-        resp = urllib.request.urlopen(req, timeout=10)
-        data = json.loads(resp.read())
-
-        findings = []
-        for vuln in data.get("vulnerabilities", []):
-            cve = vuln.get("cve", {})
-            cve_id = cve.get("id", "")
-            metrics = cve.get("metrics", {})
-            cvss = metrics.get("cvssMetric31", [{}])[0].get("cvssData", {})
-            base_score = cvss.get("baseScore", 0)
-            severity = _cvss_to_severity(base_score)
-
-            descriptions = cve.get("descriptions", [])
-            description = descriptions[0].get("value", "") if descriptions else ""
-
-            findings.append({
-                "cve": cve_id,
-                "severity": severity,
-                "description": description[:200],
-                "cvss_score": base_score,
-            })
-        return findings
-    except Exception as exc:
-        logger.warning("NVD API query failed for %s: %s", package_name, exc)
-        return []
-
-
-def _cvss_to_severity(score: float) -> str:
-    """Map CVSS score to severity level."""
-    if score >= 9.0:
-        return "critical"
-    if score >= 7.0:
-        return "high"
-    if score >= 4.0:
-        return "medium"
-    return "low"

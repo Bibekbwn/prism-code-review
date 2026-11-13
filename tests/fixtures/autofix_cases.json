@@ -1,0 +1,56 @@
+[
+  {
+    "name": "eval in return statement",
+    "source": "def f(x):\n    return eval(x)\n",
+    "line": 2,
+    "rule_id": "SECU-201",
+    "category": "Dangerous Pattern",
+    "message": "Use of eval()",
+    "expected": "    return None  # eval() removed - security risk\n"
+  },
+  {
+    "name": "eval in assignment",
+    "source": "value = eval(payload)\n",
+    "line": 1,
+    "rule_id": "SECU-201",
+    "category": "Dangerous Pattern",
+    "message": "Use of eval()",
+    "expected": "value = None  # eval() removed - security risk\n"
+  },
+  {
+    "name": "exec statement",
+    "source": "exec(payload)\n",
+    "line": 1,
+    "rule_id": "SECU-202",
+    "category": "Dangerous Pattern",
+    "message": "Use of exec()",
+    "expected": "pass  # exec() removed - security risk\n"
+  },
+  {
+    "name": "hardcoded api key",
+    "source": "API_KEY = \"sk-live-abcdef123456\"\n",
+    "line": 1,
+    "rule_id": "SECU-101",
+    "category": "Secret Exposure",
+    "message": "Possible api key detected",
+    "expected": "API_KEY = os.getenv(\"API_KEY\")\n"
+  },
+  {
+    "name": "print to logging",
+    "source": "print(\"debug\", value)\n",
+    "line": 1,
+    "rule_id": "POL-202",
+    "category": "Policy",
+    "message": "Use logging module instead of print()",
+    "expected": "logging.info(\"debug\", value)\n"
+  },
+  {
+    "name": "unfixable category",
+    "source": "some_arbitrary_line = 1\n",
+    "line": 1,
+    "rule_id": "QUAL-999",
+    "category": "Something Else",
+    "message": "No automated fix exists",
+    "expected": null
+  }
+]

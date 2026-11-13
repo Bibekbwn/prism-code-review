@@ -2,16 +2,13 @@
 Integration tests for PRISM auto-fix, SCA, lint, and JSON output.
 """
 
-import pytest
 import sys
-import os
-import json
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from prism.agents import Finding, Severity, Blocker
-from prism.autofix import generate_fix, apply_fixes, get_auto_fixable, _classify_fix
+from prism.agents import Finding, Severity
+from prism.autofix import generate_fix, apply_fixes, _classify_fix
 from prism.feedback import scan_dependencies, measure_coverage
 
 
@@ -94,7 +91,7 @@ class TestSCA:
 
 class TestJSONOutput:
     def test_json_output_structure(self):
-        from prism.cli import _json_output
+        from prism.cli_review import json_output as _json_output
         from prism.agents import AgentResult
 
         results = [AgentResult(

@@ -10,6 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # Full history so check-diff can resolve the base ref.
           fetch-depth: 0
 
       - name: Set up Python
@@ -22,10 +23,21 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           pip install -e .
 
-      - name: Run PRISM review (lite - no API key needed)
+      - name: Run PRISM review
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          python -m prism.cli check-staged --effort lite --json
-        # Lite mode runs the deterministic regex agents only (no API key).
-        # For full AI review, set GEMINI_API_KEY in repo secrets and
-        # change --effort lite to --effort balanced above.
-        continue-on-error: true
+          BASE="${{ github.base_ref }}"
+          if [ -z "$BASE" ]; then BASE=main; fi
+          # AI agents when a key is configured, deterministic-only otherwise.
+          # check-diff reviews the PR diff; check-staged would see an empty
+          # index in a CI checkout and review nothing.
+          if [ -n "$GEMINI_API_KEY" ]; then
+            EFFORT=balanced
+          else
+            EFFORT=lite
+          fi
+          echo "PRISM effort: $EFFORT (base: origin/$BASE)"
+          # No continue-on-error: blocking findings (severity >= block_on,
+          # or an AI provider outage) fail this job.
+          python -m prism.cli check-diff --base "origin/$BASE" --effort "$EFFORT" --json

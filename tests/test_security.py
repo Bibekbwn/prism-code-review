@@ -2,7 +2,6 @@
 Unit tests for the security secret scanning module.
 """
 
-import pytest
 from prism.agents_security import SecurityAgent
 
 

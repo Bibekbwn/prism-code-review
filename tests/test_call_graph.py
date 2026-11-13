@@ -9,7 +9,6 @@ These cover the two gaps I identified earlier:
      "verification agent" pattern).
 """
 
-import os
 import sys
 import tempfile
 from pathlib import Path

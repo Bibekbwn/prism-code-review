@@ -146,6 +146,15 @@ prism install-hook
 prism dashboard
 ```
 
+The dashboard opens in your browser automatically after every
+`prism check-staged` / `prism check-diff` review. It is a single self-contained
+HTML file (`.prism-reports/dashboard.html`) with all report data embedded, so it
+works offline and can be shared as-is.
+
+Suppress the automatic open with `--no-dashboard`, the `PRISM_NO_DASHBOARD`
+environment variable, or by running in CI (auto-detected via `CI` /
+`GITHUB_ACTIONS`).
+
 ---
 
 ## Command Reference
@@ -177,6 +186,21 @@ prism check path/to/file.py --fast       # Two-pass summarization for large file
 
 **Output:** Every finding shows the file, line number, problem, suggestion, and suggested code fix. A report is saved automatically to `.prism-reports/`.
 
+**Exit code:** `0` if commit allowed, `1` if blocking findings or failed quality gates exist, `2` if the file does not exist.
+
+#### `prism check-diff` — Review a PR diff against a base branch
+
+```bash
+prism check-diff                                  # Diff against origin/main
+prism check-diff --base origin/develop            # Diff against another branch
+prism check-diff --base origin/main --effort lite # Regex agents only (no API)
+prism check-diff --base origin/main --json        # Machine-readable JSON
+```
+
+Use this in CI: a fresh checkout has an empty git index, so `check-staged` would
+review nothing. `check-diff` reviews the files changed between the base branch
+and `HEAD`, which is what a pull-request review needs.
+
 #### `prism check-staged` — Review staged git changes
 
 ```bash
@@ -193,14 +217,14 @@ prism check-staged --fast                # Two-pass summarization for large file
 
 | Flag | Description |
 |------|-------------|
-| `--json` | Output results as JSON |
+| `--json` | Output results as JSON (stdout is pure JSON; status lines go to stderr) |
 | `--prompt` | Interactive prompts for medium/low findings |
 | `--effort {lite,balanced,max}` | AI review effort level |
 | `--test` | Run pytest on changed Python files before review |
 | `--dashboard` | Open visual dashboard after review |
 | `--fast` | Two-pass summarization for large files |
 
-**Exit code:** `0` if commit allowed, `1` if blocking findings exist (the pre-commit hook uses this).
+**Exit code:** `0` if commit allowed, `1` if blocking findings or failed quality gates exist (the pre-commit hook uses this).
 
 ---
 
@@ -368,6 +392,42 @@ See [Configuration Commands](#configuration-commands).
 
 ### Other Commands
 
+#### `prism ignore` — Control what pre-commit review skips
+
+```bash
+prism ignore                          # Show the list + what each staged file resolves to
+prism ignore add docs/                # Skip a folder
+prism ignore add "*.png" "assets/"    # Skip several patterns at once
+prism ignore remove docs/             # Stop skipping a pattern
+prism ignore reset                    # Restore the built-in default list
+```
+
+| Action | Description |
+|--------|-------------|
+| `list` (default) | Show `.prismignore` entries, built-in defaults, and every staged file marked `review`/`SKIP` |
+| `add <pattern>...` | Append patterns to `.prismignore` (ignored if already present) |
+| `remove <pattern>...` | Remove patterns from `.prismignore` |
+| `reset` | Restore the default ignore list (clears custom entries) |
+
+Patterns use `.gitignore` syntax: `*.md`, `docs/`, `/rooted/path.py`, and
+`!keep.md` to re-include a file that a broader pattern excluded. Matching is
+case-insensitive on every platform.
+
+**Skipped by default** (no configuration needed): docs (`*.md`, `*.rst`,
+`*.txt`, `LICENSE*`, `CHANGELOG*`, `CONTRIBUTING*`), assets (`*.png`, `*.jpg`,
+`*.svg`, `*.pdf`, …), lock files (`package-lock.json`, `yarn.lock`,
+`poetry.lock`, `uv.lock`), minified output (`*.min.js`, `*.min.css`) and editor
+noise (`.DS_Store`, `Thumbs.db`).
+
+To keep the list next to the rest of the PRISM config, add an `ignore` array to
+`prism.json` instead — both sources are applied, `.prismignore` first:
+
+```json
+{
+  "ignore": ["vendor/", "generated/"]
+}
+```
+
 #### `prism version` — Show version
 
 ```bash
@@ -491,7 +551,10 @@ The main configuration file. Ships with the repo — never overwritten by `prism
     "max_file_length": 500,
     "min_coverage": 0
   },
-  "confidence_threshold": 0.7
+  "confidence_threshold": 0.7,
+  "policy": {
+    "headers": false
+  }
 }
 ```
 
@@ -501,8 +564,9 @@ The main configuration file. Ships with the repo — never overwritten by `prism
 | `block_on` | Severity levels that block a commit |
 | `quality_gates.max_complexity` | Max cyclomatic complexity before blocking |
 | `quality_gates.max_file_length` | Max lines per file before blocking |
-| `quality_gates.min_coverage` | Minimum test coverage percentage |
+| `quality_gates.min_coverage` | Minimum test coverage percentage (`0` disables the gate) |
 | `confidence_threshold` | Minimum confidence (0.0–1.0) for a finding to be reported |
+| `policy.headers` | Require copyright/SPDX headers (`POL-101`, `POL-206`). Off by default |
 
 ### `.prism-policy.json` (Deviation Management)
 
@@ -679,7 +743,7 @@ PRISM includes GitHub Actions workflows:
 Runs on every push and PR to `main`. Tests on **Ubuntu and Windows** with **Python 3.11, 3.12, 3.13**. Runs `pytest`, self-tests, and CLI smoke commands. Includes a lint job.
 
 ### `.github/workflows/prism-review.yml` — Automated Review
-Runs on every PR. Installs PRISM and runs `prism check-staged --effort lite --json` on the changed files. Lite mode requires no API key. For full AI review, set `GEMINI_API_KEY` in repo secrets and change `--effort lite` to `--effort balanced` in the workflow.
+Runs on every PR. Installs PRISM and runs `prism check-diff --base origin/<base> --effort lite --json` on the PR diff. Lite mode requires no API key. For full AI review, set `GEMINI_API_KEY` in repo secrets and change `--effort lite` to `--effort balanced` in the workflow. (`check-staged` would see an empty index in a CI checkout, so it is not used here.)
 
 ---
 
@@ -765,9 +829,13 @@ hackathon/
 ├── prism/                          # Main package
 │   ├── __init__.py
 │   ├── cli.py                      # CLI entry point (argparse + dispatch)
-│   ├── cli_commands.py             # All command implementations + self-tests
+│   ├── cli_commands.py             # check / check-staged / check-diff + self-tests
 │   ├── cli_config.py               # Config loading, git helpers, deviation policy
 │   ├── cli_review.py               # Review orchestration, report formatting
+│   ├── commands_common.py          # Shared helpers for the command handlers
+│   ├── commands_reports.py         # reports, cache, config, stats, dashboard
+│   ├── commands_setup.py           # key, init, hook, version, help, agents, ignore
+│   ├── ignore.py                   # .prismignore parsing + path matching
 │   ├── agents.py                   # BaseAgent, Finding, Severity, Blocker, pipeline
 │   ├── agents_security.py          # Regex: secrets, dangerous patterns (SECU-XXX)
 │   ├── agents_quality.py           # Regex: complexity, naming, imports (QUAL-XXX)
@@ -793,18 +861,24 @@ hackathon/
 │   ├── dashboard.html              # Dashboard HTML template
 │   ├── setup.py                    # Installable package definition
 │   └── pre-commit-hook.sh          # Git hook script template
-├── tests/                          # 33 unit + integration tests
+├── tests/                          # 158 unit + integration tests
 │   ├── conftest.py
 │   ├── test_call_graph.py
+│   ├── test_cli_handlers.py
+│   ├── test_coverage_paths.py
+│   ├── test_golden_corpus.py
 │   ├── test_integration.py
 │   ├── test_lsp.py
-│   └── test_security.py
+│   ├── test_providers.py
+│   ├── test_security.py
+│   └── test_regressions.py
 ├── .github/
 │   └── workflows/
 │       ├── ci-cd.yml               # Test CI (Ubuntu + Windows, Python 3.11–3.13)
 │       └── prism-review.yml        # Automated PR review
 ├── .env.example                    # Environment variable template
 ├── .gitignore
+├── .prismignore                    # Files pre-commit review skips (see `prism ignore`)
 ├── prism.json                      # PRISM configuration
 └── README.md
 ```
@@ -832,4 +906,6 @@ The test suite covers:
 - Call graph and cross-file context
 - LSP server protocol
 - Integration (full pipeline)
+- Regression tests for cache blocking, JSON purity, auto-fix imports,
+  dotenv secrets, AI dedup, binary skipping, quality gates, and `--fast`
 - 13 built-in self-tests (skeleton, chunking, tiers, verification, import graph, agent registration)

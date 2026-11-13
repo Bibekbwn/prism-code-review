@@ -14,7 +14,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 REPORTS_DIR = ".prism-reports"
 REPORT_INDEX = os.path.join(REPORTS_DIR, "index.json")
@@ -36,7 +36,7 @@ def save_report(
     """Save a review report to .prism-reports/ and return the report ID."""
     _ensure_dir()
 
-    report_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    report_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     report = {
         "id": report_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -176,10 +176,14 @@ def clear_reports() -> int:
     for name in os.listdir(REPORTS_DIR):
         if not name.endswith(".json"):
             continue
+        # index.json is bookkeeping, not a report: deleting it is fine, but it
+        # must not inflate the "Deleted N report(s)" count.
+        is_index = name == "index.json"
         path = os.path.join(REPORTS_DIR, name)
         try:
             os.remove(path)
-            count += 1
+            if not is_index:
+                count += 1
         except OSError:
             pass
     return count

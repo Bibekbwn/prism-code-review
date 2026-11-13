@@ -9,7 +9,17 @@ Based on GitHub Copilot's "suggested changes" and CodeRabbit's "One-Click Fix":
 
 import re
 from typing import List, Optional, Tuple
-from prism.agents import Finding, Severity
+from prism.agents import Finding
+from prism.logging_config import logger
+
+
+def _is_valid_python(source: str) -> bool:
+    """True when source parses as a complete Python module."""
+    try:
+        compile(source, "<prism-autofix>", "exec")
+    except (SyntaxError, ValueError):
+        return False
+    return True
 
 
 def generate_fix(finding: Finding, original_content: str) -> Optional[str]:
@@ -36,6 +46,9 @@ def generate_fix(finding: Finding, original_content: str) -> Optional[str]:
     if fix_type == "remove_eval":
         return _remove_eval(original_line, finding)
 
+    if fix_type == "remove_exec":
+        return _remove_exec(original_line, finding)
+
     if fix_type == "add_logging":
         return _replace_print_with_logging(original_line, finding)
 
@@ -52,21 +65,41 @@ def generate_fix(finding: Finding, original_content: str) -> Optional[str]:
 
 
 def _classify_fix(finding: Finding) -> str:
-    """Classify what kind of fix is needed."""
+    """Classify what kind of fix is needed.
+
+    Rule IDs are authoritative when present. The message fallbacks use word
+    boundaries so "evaluation" no longer looks like eval() and "keyword" no
+    longer looks like an API key.
+    """
     rule_id = finding.rule_id or ""
     msg = finding.message.lower()
 
-    if "eval" in msg:
+    if rule_id == "SECU-201":
         return "remove_eval"
-    if "debugger" in msg:
-        return "remove_debugger"
-    if "console.log" in msg:
-        return "remove_console_log"
-    if "print(" in msg:
-        return "add_logging"
-    if "secret" in msg or "key" in msg or "token" in msg or "password" in msg:
+    if rule_id == "SECU-202":
+        return "remove_exec"
+    if re.match(r"^SECU-1\d\d$", rule_id):
         return "replace_secret"
-    if "docstring" in msg:
+    if rule_id == "POL-203":
+        return "remove_debugger"
+    if rule_id == "POL-202":
+        return "add_logging"
+    if rule_id == "TST-102":
+        return "add_test_docstring"
+
+    if re.search(r"\beval\s*\(", msg):
+        return "remove_eval"
+    if re.search(r"\bexec\s*\(", msg):
+        return "remove_exec"
+    if re.search(r"\bdebugger\b", msg):
+        return "remove_debugger"
+    if re.search(r"console\.log", msg):
+        return "remove_console_log"
+    if re.search(r"\bprint\s*\(", msg):
+        return "add_logging"
+    if re.search(r"\b(api[_-]?key|secret|password|passwd|pwd|token)\b", msg):
+        return "replace_secret"
+    if re.search(r"\bdocstring\b", msg):
         return "add_test_docstring"
 
     return "unknown"
@@ -87,17 +120,42 @@ def _replace_secret(line: str, finding: Finding) -> str:
     return line
 
 
+def _remove_dangerous_call(line: str, name: str) -> str:
+    """Replace a dangerous call with a syntactically valid, inert statement.
+
+    Commenting out only the call left fragments such as
+    ``return # eval() removed`` followed by ``# x)``, which is confusing and
+    silently changes control flow. Emit a complete statement instead.
+    """
+    indent = re.match(r"^(\s*)", line).group(1)
+    stripped = line.strip()
+    if re.match(r"^return\s+" + name + r"\s*\(", stripped):
+        return "{}return None  # {}() removed - security risk".format(indent, name)
+    match = re.match(r"^([A-Za-z_]\w*)\s*=\s*" + name + r"\s*\(", stripped)
+    if match:
+        return "{}{} = None  # {}() removed - security risk".format(
+            indent, match.group(1), name)
+    if re.match(r"^" + name + r"\s*\(", stripped):
+        return "{}pass  # {}() removed - security risk".format(indent, name)
+    return "{}# {}() removed - security risk: {}".format(indent, name, stripped)
+
+
 def _remove_eval(line: str, finding: Finding) -> str:
-    """Replace eval() with a safer alternative."""
-    return re.sub(r'\beval\s*\(', '# eval() removed - security risk\n# ', line)
+    """Replace eval() with an inert statement."""
+    return _remove_dangerous_call(line, "eval")
+
+
+def _remove_exec(line: str, finding: Finding) -> str:
+    """Replace exec() with an inert statement."""
+    return _remove_dangerous_call(line, "exec")
 
 
 def _replace_print_with_logging(line: str, finding: Finding) -> str:
-    """Replace print() with logger call."""
+    """Replace print() with logging.info() (import is ensured later)."""
     match = re.match(r'^(\s*)print\((.*)\)', line)
     if match:
         indent, content = match.groups()
-        return '{}logger.info({})'.format(indent, content)
+        return '{}logging.info({})'.format(indent, content)
     return line
 
 
@@ -142,6 +200,52 @@ def apply_fixes(fixes: List[Tuple[Finding, str]], content: str) -> str:
         line_idx = (finding.line or 1) - 1
         if 0 <= line_idx < len(lines):
             lines[line_idx] = fixed_line
+    fixed = _ensure_imports("\n".join(lines))
+
+    # The heuristics are line-local, so a fix can still produce unparsable
+    # code (e.g. inside a multi-line expression). Never hand back a broken
+    # file: fall back to the original and let the developer fix it manually.
+    if _is_valid_python(content) and not _is_valid_python(fixed):
+        logger.warning(
+            "Auto-fix rejected: generated code for %s would not compile",
+            ", ".join(str((f.line or 0)) for f, _ in fixes),
+        )
+        return content
+    return fixed
+
+
+def _ensure_imports(content: str) -> str:
+    """Add imports required by generated fixes (e.g. os for os.getenv)."""
+    needs = []
+    if re.search(r"\bos\.(?:getenv|environ)\b", content) and \
+            not re.search(r"^\s*import\s+os\b", content, re.MULTILINE):
+        needs.append("import os")
+    if re.search(r"\blogging\.\w+", content) and \
+            not re.search(r"^\s*import\s+logging\b", content, re.MULTILINE):
+        needs.append("import logging")
+    if not needs:
+        return content
+
+    lines = content.split("\n")
+    insert_at = 0
+    if lines and lines[0].startswith("#!"):
+        insert_at = 1
+    if insert_at < len(lines):
+        stripped = lines[insert_at].lstrip()
+        if stripped.startswith(('"""', "'''")):
+            quote = stripped[:3]
+            if stripped.count(quote) >= 2 and len(stripped) > 3:
+                insert_at += 1
+            else:
+                for j in range(insert_at + 1, len(lines)):
+                    if quote in lines[j]:
+                        insert_at = j + 1
+                        break
+    while insert_at < len(lines) and (
+        lines[insert_at].strip() == "" or lines[insert_at].lstrip().startswith("#")
+    ):
+        insert_at += 1
+    lines[insert_at:insert_at] = needs
     return "\n".join(lines)
 
 

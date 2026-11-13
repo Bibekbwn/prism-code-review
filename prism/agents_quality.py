@@ -5,7 +5,6 @@ Rule IDs follow SonarQube convention: QUAL-XXX
 """
 
 import ast
-import os
 import re
 from typing import List
 from prism.agents import BaseAgent, Finding, Severity, Blocker, register_agent
@@ -166,9 +165,6 @@ def _check_magic_numbers(content: str, file_path: str) -> List[Finding]:
     pattern = re.compile(
         r'(?<![\w.])(\d{2,})(?![\w.])'
     )
-    assignment_rhs = re.compile(
-        r'^\s*[a-zA-Z_]\w*\s*[:=]\s*$'
-    )
     for i, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith("#"):
@@ -216,8 +212,8 @@ def _check_missing_docstrings(content: str, file_path: str) -> List[Finding]:
             has_docstring = (
                 len(body) > 0 and
                 isinstance(body[0], ast.Expr) and
-                isinstance(body[0].value, (ast.Constant, ast.Str))
-                and isinstance(getattr(body[0].value, 'value', None), str)
+                isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
             )
             if not has_docstring:
                 findings.append(Finding(

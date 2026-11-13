@@ -37,13 +37,23 @@ def load_deviation_policy():
     return {"deviations": []}
 
 
-def get_staged_files():
-    """Return the list of files staged for commit (git diff --cached)."""
+def get_staged_files(apply_ignore=True):
+    """Return the list of files staged for commit (git diff --cached).
+
+    Paths matched by .prismignore (or the config ``ignore`` list) are left out
+    so documentation, assets and lock files do not fail the pre-commit review.
+    """
     result = subprocess.run(
         ["git", "diff", "--cached", "--name-only", "--diff-filter=ACM"],
         capture_output=True, text=True,
     )
-    return [f.strip() for f in result.stdout.strip().split("\n") if f.strip()]
+    files = [f.strip() for f in result.stdout.strip().split("\n") if f.strip()]
+    if not apply_ignore or not files:
+        return files
+
+    from prism.ignore import filter_files
+    kept, _skipped = filter_files(files)
+    return kept
 
 
 def run_changed_tests(changed_files, timeout=120):
@@ -115,6 +125,41 @@ def get_file_diff(file_path, context_lines=3):
             return result.stdout
     except Exception:
         pass
+    return ""
+
+
+def get_diff_files(base="origin/main"):
+    """Return files changed between `base` and HEAD (PR-style review).
+
+    Falls back to the working-tree diff when the three-dot ref is unavailable
+    (e.g. a shallow clone without the base branch).
+    """
+    for ref in ("{}...HEAD".format(base), base):
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--name-only", ref],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception:
+            continue
+        if result.returncode == 0 and result.stdout.strip():
+            return [f.strip() for f in result.stdout.split("\n") if f.strip()]
+    return []
+
+
+def get_diff_for_file(base, file_path, context_lines=3):
+    """Return the diff of `file_path` between `base` and HEAD."""
+    for ref in ("{}...HEAD".format(base), base):
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--unified={}".format(context_lines), ref,
+                 "--", file_path],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception:
+            continue
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout
     return ""
 
 

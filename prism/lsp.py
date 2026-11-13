@@ -26,17 +26,20 @@ VS Code settings.json (example):
 """
 
 import json
-import os
 import sys
-import subprocess
 import threading
 from pathlib import Path
 
 # Ensure prism package is importable
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from prism.cli import review_file, load_config
-from prism.agents import Blocker
+from prism.cli_config import load_config
+from prism.cli_review import review_file
+from prism.ai_graph import invalidate_graph_cache
+from prism import agents_policy, agents_quality, agents_security, agents_test
+
+_registered_agents = (agents_policy, agents_quality, agents_security,
+                      agents_test)
 
 
 def _read_message():
@@ -166,6 +169,9 @@ def run():
         elif method == "textDocument/didChange":
             uri = params["textDocument"]["uri"]
             if uri in open_files:
+                # The graph cache is stat-signature checked, but the edited
+                # file's new mtime must be picked up before the next review.
+                invalidate_graph_cache()
                 diag, _err = _review_file_to_diagnostics(open_files[uri], config)
                 _publish_diagnostics(uri, diag)
 

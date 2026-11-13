@@ -14,8 +14,7 @@ directly.
 import logging
 
 from prism.ai_providers import (
-    get_model, _call_fn, _call_claude, _call_openai, _call_with_retry,
-    API_TIMEOUT, MAX_RETRIES, MAX_CONTENT_CHARS,
+    get_model, API_TIMEOUT, MAX_RETRIES, MAX_CONTENT_CHARS,
 )
 from prism.ai_findings import parse_findings, verify_findings
 from prism.ai_graph import build_import_graph, get_cross_file_context
@@ -26,16 +25,8 @@ from prism.ai_pipeline import (
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "get_model", "call_fn", "parse_findings", "verify_findings",
+    "get_model", "parse_findings", "verify_findings",
     "build_import_graph", "get_cross_file_context", "chunk_content",
     "build_skeleton", "get_tier_for_file", "review_with_agent",
     "API_TIMEOUT", "MAX_RETRIES", "MAX_CONTENT_CHARS",
 ]
-
-
-def call_fn(model, system_prompt, file_path, content, agent_name="unknown",
-            skeleton="", timeout=None, cross_file_context=""):
-    """Public entry point — thin wrapper over the provider-specific _call_fn."""
-    return _call_fn(model, system_prompt, file_path, content, agent_name,
-                    skeleton=skeleton, timeout=timeout,
-                    cross_file_context=cross_file_context)

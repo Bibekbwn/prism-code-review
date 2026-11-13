@@ -1,0 +1,38 @@
+[
+  {
+    "name": "same secret reworded",
+    "a": {"category": "Secret Exposure", "message": "Possible api key detected"},
+    "b": {"category": "Hardcoded Secret", "message": "AWS key hardcoded"},
+    "collapse": true
+  },
+  {
+    "name": "identical messages",
+    "a": {"category": "Secret Exposure", "message": "Hardcoded password in source"},
+    "b": {"category": "Secret Exposure", "message": "Hardcoded password in source"},
+    "collapse": true
+  },
+  {
+    "name": "two different secret subjects",
+    "a": {"category": "Secret Exposure", "message": "Hardcoded AWS access key"},
+    "b": {"category": "Secret Exposure", "message": "Hardcoded database password"},
+    "collapse": false
+  },
+  {
+    "name": "same subject different provider",
+    "a": {"category": "Secret Exposure", "message": "Hardcoded AWS key"},
+    "b": {"category": "Secret Exposure", "message": "Hardcoded SSH key"},
+    "collapse": false
+  },
+  {
+    "name": "secret and performance",
+    "a": {"category": "Secret Exposure", "message": "Hardcoded AWS key"},
+    "b": {"category": "Performance", "message": "Nested loop O(n^2)"},
+    "collapse": false
+  },
+  {
+    "name": "same family generic subjects",
+    "a": {"category": "Secret Exposure", "message": "Hardcoded secret found"},
+    "b": {"category": "Secret Exposure", "message": "Hardcoded password found"},
+    "collapse": false
+  }
+]

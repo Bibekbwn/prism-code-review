@@ -1,4 +1,4 @@
-import json
+import re
 from pathlib import Path
 
 from prism.agents import (
@@ -7,11 +7,145 @@ from prism.agents import (
 )
 from prism.ai_common import build_skeleton
 from prism.feedback import scan_dependencies, should_suppress
-from prism.logging_config import logger
+from prism import agents_policy
 
 from prism.cli_config import (
     DEFAULT_AGENTS, CONFIDENCE_THRESHOLD, load_deviation_policy, is_deviation,
 )
+
+_SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+
+_STOPWORDS = {
+    "the", "and", "for", "with", "this", "that", "from", "into", "when",
+    "use", "using", "used", "has", "have", "are", "was", "were", "not",
+    "but", "can", "could", "should", "would", "will", "may", "might",
+    "there", "their", "them", "then", "than", "also", "only", "very",
+    "which", "while", "because", "been", "being", "does", "did", "each",
+}
+
+_CATEGORY_FAMILY = (
+    ("secret", ("secret", "credential", "password", "token", "api key", "apikey")),
+    ("injection", ("injection", "command", "eval", "exec", "deserial", "xss", "sql")),
+    ("auth", ("auth", "permission", "access control", "authorization")),
+    ("performance", ("performance", "n+1", "memory", "algorithm", "latency", "throughput")),
+    ("architecture", ("architect", "coupling", "modular", "layer", "god", "design")),
+    ("test", ("test", "coverage", "assert")),
+    ("quality", ("complex", "duplicat", "maintain", "style", "docstring",
+                 "naming", "unused", "readab")),
+)
+
+
+def _category_family(category):
+    lowered = (category or "").lower()
+    for family, needles in _CATEGORY_FAMILY:
+        if any(n in lowered for n in needles):
+            return family
+    return lowered
+
+
+def _message_tokens(message):
+    words = re.findall(r"[a-z0-9_]{3,}", (message or "").lower())
+    return {w for w in words if w not in _STOPWORDS}
+
+
+# Tokens that name *which* secret is exposed. Two findings about different
+# subjects on the same line (an AWS key and a DB password) are distinct issues
+# and must not be collapsed into one.
+_SECRET_SUBJECTS = ("secret", "credential", "password", "passwd", "pwd",
+                    "token", "key")
+
+# Qualifier tokens distinguish two findings with the same subject: an AWS key
+# and an SSH key on the same line are two different secrets. Generic qualifiers
+# (api/access/private/public) describe the *kind* of key, not a provider, so
+# they are treated as wildcards.
+_SECRET_QUALIFIERS = (
+    "aws", "amazon", "gcp", "google", "azure", "ssh", "db", "database",
+    "postgres", "postgresql", "mysql", "mongo", "mongodb", "redis", "stripe",
+    "github", "gitlab", "slack", "jwt", "smtp", "ftp", "s3",
+)
+_GENERIC_QUALIFIERS = ("api", "access", "private", "public", "root", "admin")
+
+
+def _secret_subjects(tokens):
+    return {t for t in tokens if t in _SECRET_SUBJECTS}
+
+
+def _secret_qualifiers(tokens):
+    return {t for t in tokens if t in _SECRET_QUALIFIERS}
+
+
+def _same_secret(a_tokens, b_tokens):
+    """True when two messages describe the same secret, not two secrets."""
+    sa, sb = _secret_subjects(a_tokens), _secret_subjects(b_tokens)
+    if sa != sb:
+        return False
+    qa, qb = _secret_qualifiers(a_tokens), _secret_qualifiers(b_tokens)
+    if not qa or not qb or qa == qb or (qa | qb) & set(_GENERIC_QUALIFIERS):
+        return True
+    return bool(qa & qb)
+
+
+def _similar_finding(a, f):
+    """True when two AI findings describe the same issue on the same line.
+
+    Sharing a category family is not enough on its own: a line can carry a
+    hardcoded API key *and* a hardcoded DB password. Collapse only when the
+    messages overlap textually, or when the same category family is backed by
+    the same secret subject.
+    """
+    ta, tf = _message_tokens(a.message), _message_tokens(f.message)
+    overlap = (len(ta & tf) / len(ta | tf)) if (ta and tf) else 0.0
+    if overlap >= 0.6:
+        return True
+    if _category_family(a.category) != _category_family(f.category):
+        return False
+
+    if _secret_subjects(ta) or _secret_subjects(tf):
+        return _same_secret(ta, tf)
+    if not ta or not tf:
+        return True
+    return overlap >= 0.34
+
+
+def _rank(f):
+    return (_SEVERITY_RANK.get(f.severity.value, 0), f.confidence)
+
+
+def dedupe_results(results):
+    """Remove duplicate AI findings without merging distinct same-line issues.
+
+    AI agents describe the same issue with different categories and wording,
+    so collapse per (file, line) *within a category family* or when the
+    messages are textually similar. Findings in different families (for
+    example a hardcoded secret and an O(n^2) loop on the same line) are kept.
+    """
+    ai_kept = []
+    for r in results:
+        kept = []
+        for f in r.findings:
+            if not f.agent.startswith("ai_"):
+                kept.append(f)
+                continue
+
+            duplicate = next(
+                (k for k in ai_kept
+                 if k.file == f.file and k.line == f.line
+                 and _similar_finding(k, f)),
+                None,
+            )
+            if duplicate is None:
+                ai_kept.append(f)
+                kept.append(f)
+            elif _rank(f) > _rank(duplicate):
+                for other in results:
+                    if duplicate in other.findings:
+                        other.findings.remove(duplicate)
+                ai_kept.remove(duplicate)
+                ai_kept.append(f)
+                kept.append(f)
+        r.findings = kept
+
+    return [r for r in results if r.findings or not r.agent_name.startswith("ai_")]
 
 
 def review_file(file_path, config, effort="balanced", fast=False, diff=""):
@@ -25,12 +159,21 @@ def review_file(file_path, config, effort="balanced", fast=False, diff=""):
     if not path.exists():
         return [], 0.0
     content = path.read_text(errors="ignore")
+    # Binary files are not source; scanning them as text produced magic-number
+    # false positives (e.g. .bin, images, compiled artifacts).
+    if "\x00" in content:
+        return [], 0.0
     skeleton = build_skeleton(file_path, content)
     line_count = content.count("\n") + 1
     agents = list(config.get("agents", DEFAULT_AGENTS))
-    # `lite` effort is for IDE/LSP use: deterministic agents only, no API calls.
+    # `lite` effort is for IDE/LSP use: deterministic agents only, no API calls
+    # and no repo-wide coverage run.
     if effort == "lite":
         agents = [a for a in agents if not a.startswith("ai_")]
+        fast = True
+    agents_policy.HEADER_CHECKS_ENABLED = bool(
+        config.get("policy", {}).get("headers", False)
+    )
     results = run_pipeline(agents, file_path, content, diff, skeleton,
                            line_count=line_count, fast=fast)
 
@@ -59,7 +202,9 @@ def review_file(file_path, config, effort="balanced", fast=False, diff=""):
                 duration_ms=0.0,
             ))
 
-    score = risk_score(file_path, content, content)
+    results = dedupe_results(results)
+    findings = [f for r in results for f in r.findings]
+    score = risk_score(file_path, content, content, findings)
     return results, score
 
 
@@ -176,11 +321,15 @@ def json_output(results, config, risk_scores, file_path):
                 ),
             })
 
+    blocking = sum(1 for f in all_findings if f["blocking"])
+    gates_ok = quality_gates_met(results, config)
+
     return {
         "file": file_path,
         "risk_score": risk_scores.get(file_path, 0.0),
         "total_findings": len(all_findings),
         "findings": all_findings,
-        "blocking": sum(1 for f in all_findings if f["blocking"]),
-        "commit_allowed": sum(1 for f in all_findings if f["blocking"]) == 0,
+        "blocking": blocking,
+        "quality_gates_passed": gates_ok,
+        "commit_allowed": blocking == 0 and gates_ok,
     }

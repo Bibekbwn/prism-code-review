@@ -90,8 +90,9 @@ h2 { font-size: 18px; margin: 24px 0 12px; color: #cbd5e1; }
 <div id="reports">Loading...</div>
 </div>
 <script>
+/* PRISM_DASHBOARD_DATA */
 function loadReports() {
-  render({reports: EMBEDDED_REPORTS});
+  render({reports: (typeof EMBEDDED_REPORTS !== 'undefined' ? EMBEDDED_REPORTS : [])});
 }
 
 function render(data) {
@@ -264,6 +265,8 @@ function escapeHtml(s) {
   if (!s) return '';
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+
+loadReports();
 </script>
 </body>
 </html>

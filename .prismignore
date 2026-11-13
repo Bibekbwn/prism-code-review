@@ -1,0 +1,3 @@
+# Files PRISM skips during pre-commit review.
+# One pattern per line; '!' re-includes a path. See `prism help ignore`.
+

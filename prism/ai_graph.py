@@ -10,11 +10,39 @@ import os
 import ast
 from pathlib import Path
 
-# Process-level cache: {repo_path: graph}.
-# build_import_graph walks the whole repo on every call, which made the
-# LSP server take 5.5s per file. The graph only changes when a file changes,
-# so we cache it for the process lifetime and let callers invalidate it.
+# Process-level cache: {repo_path: (signature, graph)}.
+# build_import_graph walks and parses the whole repo on every call, which made
+# the LSP server take 5.5s per file. The graph is reused while the repo is
+# unchanged: a cheap stat signature (path, mtime, size) is compared on every
+# call, so long-lived processes (LSP, watch mode) self-invalidate after edits
+# without every caller having to remember to call invalidate_graph_cache().
 _graph_cache = {}
+
+# Directories that never contain first-party source worth indexing.
+_SKIP_DIRS = {
+    ".git", ".hg", ".svn", "__pycache__", ".venv", "venv", "env",
+    "node_modules", "site-packages", ".mypy_cache", ".pytest_cache",
+    ".tox", "dist", "build", ".eggs",
+}
+
+
+def _is_skipped(path):
+    return any(part in _SKIP_DIRS for part in path.parts)
+
+
+def _graph_signature(py_files):
+    """Stat-only fingerprint of the scanned files.
+
+    Returns None when a file disappears mid-scan, which forces a rebuild.
+    """
+    signature = []
+    for py_file in py_files:
+        try:
+            st = py_file.stat()
+        except OSError:
+            return None
+        signature.append((str(py_file), st.st_mtime_ns, st.st_size))
+    return tuple(signature)
 
 
 def build_import_graph(repo_path):
@@ -28,11 +56,15 @@ def build_import_graph(repo_path):
         return {}
 
     key = str(repo.resolve())
-    if key in _graph_cache:
-        return _graph_cache[key]
+    py_files = [p for p in repo.rglob("*.py") if not _is_skipped(p)]
+    signature = _graph_signature(py_files)
 
-    graph = _build_graph(repo)
-    _graph_cache[key] = graph
+    cached = _graph_cache.get(key)
+    if cached is not None and signature is not None and cached[0] == signature:
+        return cached[1]
+
+    graph = _build_graph(repo, py_files)
+    _graph_cache[key] = (signature, graph)
     return graph
 
 
@@ -44,10 +76,33 @@ def invalidate_graph_cache(repo_path=None):
         _graph_cache.pop(str(Path(repo_path).resolve()), None)
 
 
-def _build_graph(repo):
+def _resolve_import(imp, pkg_parts):
+    """Resolve an import string to a dotted module path within the repo.
+
+    Absolute imports are returned as-is. Relative imports (stored with a
+    leading-dot prefix, e.g. ``.mod`` or ``..pkg``) are resolved against the
+    importing file's package parts.
+    """
+    if not imp:
+        return None
+    if not imp.startswith("."):
+        return imp
+    level = len(imp) - len(imp.lstrip("."))
+    rest = imp[level:]
+    if level > len(pkg_parts):
+        return None
+    base = pkg_parts[:len(pkg_parts) - (level - 1)]
+    parts = list(base)
+    if rest:
+        parts.append(rest)
+    return ".".join(parts) if parts else None
+
+
+def _build_graph(repo, py_files=None):
     """Uncached graph builder. See build_import_graph for the return shape."""
     graph = {}
-    py_files = list(repo.rglob("*.py"))
+    if py_files is None:
+        py_files = [p for p in repo.rglob("*.py") if not _is_skipped(p)]
 
     # First pass: collect imports and functions per file
     for py_file in py_files:
@@ -57,8 +112,9 @@ def _build_graph(repo):
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
                     imports.extend(a.name for a in node.names)
-                elif isinstance(node, ast.ImportFrom) and node.module:
-                    imports.append(node.module)
+                elif isinstance(node, ast.ImportFrom):
+                    prefix = "." * (node.level or 0)
+                    imports.append(prefix + (node.module or ""))
 
             functions = {}
             for node in ast.iter_child_nodes(tree):
@@ -84,36 +140,53 @@ def _build_graph(repo):
         except (SyntaxError, ValueError):
             continue
 
-    # Second pass: resolve cross-file imports
-    for py_file, info in graph.items():
-        for imp in info['imports']:
-            imp_norm = imp.replace('.', os.sep)
-            for other in py_files:
-                other_str = str(other)
-                if other_str == py_file:
-                    continue
-                if (other_str.endswith(imp_norm + '.py')
-                        or other_str.endswith(imp_norm + os.sep + '__init__.py')):
-                    graph.setdefault(other_str, {
-                        'imports': [], 'imported_by': [], 'functions': {}
-                    })
-                    if py_file not in graph[other_str]['imported_by']:
-                        graph[other_str]['imported_by'].append(py_file)
+    # Second pass: resolve cross-file imports. Index each module by its dotted
+    # path so resolution is O(1) per import (was O(imports * files)).
+    module_index = {}
+    for py_file in py_files:
+        rel = py_file.relative_to(repo)
+        parts = list(rel.with_suffix("").parts)
+        if parts and parts[-1] == "__init__":
+            parts = parts[:-1]
+        module_index[".".join(parts)] = str(py_file)
 
-    # Third pass: build function-level called_by edges
+    for file_key, info in graph.items():
+        py_file = Path(file_key)
+        pkg_parts = list(py_file.relative_to(repo).parts[:-1])
+        for imp in info['imports']:
+            target = _resolve_import(imp, pkg_parts)
+            if not target:
+                continue
+            other_str = module_index.get(target)
+            if not other_str or other_str == file_key:
+                continue
+            other = graph.get(other_str)
+            if other is None:
+                continue
+            if file_key not in other['imported_by']:
+                other['imported_by'].append(file_key)
+
+    # Third pass: build function-level called_by edges. Index functions by
+    # name once instead of scanning every file for every call (was O(F*C*N)).
+    func_index = {}
+    for file_name, info in graph.items():
+        for func_name, func_info in info.get("functions", {}).items():
+            func_index.setdefault(func_name, []).append((file_name, func_info))
+
     for caller_file, info in graph.items():
-        for func_name, func_info in info.get('functions', {}).items():
-            for called in func_info['calls']:
-                for other_file, other_info in graph.items():
-                    if other_file != caller_file and called in other_info.get('functions', {}):
-                        other_info['functions'][called]['called_by'].append(
-                            (caller_file, func_name, func_info['line'])
-                        )
+        for func_name, func_info in info.get("functions", {}).items():
+            for called in func_info.get("calls", []):
+                for other_file, other_info in func_index.get(called, []):
+                    if other_file == caller_file:
+                        continue
+                    other_info["called_by"].append(
+                        (caller_file, func_name, func_info["line"])
+                    )
 
     return graph
 
 
-def get_cross_file_context(file_path, graph, repo_path, max_depth=2):
+def get_cross_file_context(file_path, graph, repo_path):
     """Get cross-file context for a given file.
 
     Returns a string describing what this file imports, what files import

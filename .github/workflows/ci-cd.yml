@@ -28,10 +28,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
           pip install -e .
-          pip install pytest
+          pip install pytest pytest-cov
 
       - name: Run unit tests
-        run: pytest tests/ -v
+        run: pytest tests/ -q --cov=prism --cov-report=term-missing --cov-fail-under=60
 
       - name: Run PRISM self-tests
         run: python -m prism.cli test --quick
