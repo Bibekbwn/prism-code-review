@@ -35,6 +35,9 @@ h2 { font-size: 18px; margin: 24px 0 12px; color: #cbd5e1; }
 .agent-policy { background: #06b6d4; }
 .agent-test { background: #10b981; }
 .agent-ai { background: #ec4899; }
+.token-fill { background: #a78bfa; }
+.bar-value.wide { width: 76px; }
+.bar-label.token-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Filters */
 .filters { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
@@ -106,6 +109,14 @@ function render(data) {
   const findings = reports.reduce((s, r) => s + (r.total_findings || 0), 0);
   const blocking = reports.reduce((s, r) => s + (r.blocking || 0), 0);
 
+  // Token accounting. Reports written before token tracking existed have no
+  // token_usage field: they contribute nothing here and render as unknown in
+  // the timeline, so a cost trend never dips because of missing history.
+  const tokenReports = reports.filter(r => r.token_usage);
+  const tokens = tokenReports.reduce((s, r) => s + (r.token_usage.total_tokens || 0), 0);
+  const tokenCalls = tokenReports.reduce((s, r) => s + (r.token_usage.calls || 0), 0);
+  const estimatedCalls = tokenReports.reduce((s, r) => s + (r.token_usage.estimated_calls || 0), 0);
+
   // Severity counts
   const sevCounts = {critical: 0, high: 0, medium: 0, low: 0};
   // Agent counts
@@ -132,6 +143,7 @@ function render(data) {
   html += '<div class="stat-card"><div class="stat-value" style="color:#22c55e">' + (total - blocked) + '</div><div class="stat-label">Passed</div></div>';
   html += '<div class="stat-card"><div class="stat-value" style="color:#f97316">' + findings + '</div><div class="stat-label">Total Findings</div></div>';
   html += '<div class="stat-card"><div class="stat-value" style="color:#eab308">' + blocking + '</div><div class="stat-label">Blocking</div></div>';
+  html += '<div class="stat-card"><div class="stat-value" style="color:#a78bfa">' + tokens.toLocaleString() + '</div><div class="stat-label">Tokens (' + tokenCalls + ' call' + (tokenCalls === 1 ? '' : 's') + (estimatedCalls ? ', ' + estimatedCalls + ' est.' : '') + ')</div></div>';
   html += '</div>';
 
   // Charts row
@@ -162,6 +174,26 @@ function render(data) {
       html += '<div class="bar-row"><div class="bar-label">' + agent + '</div>';
       html += '<div class="bar-track"><div class="bar-fill ' + cls + '" style="width:' + pct + '%"></div></div>';
       html += '<div class="bar-value">' + c + '</div></div>';
+    });
+  }
+  html += '</div>';
+
+  // Token chart: one bar per review that actually spent tokens.
+  const tokenSeries = tokenReports.filter(r => r.token_usage.calls)
+    .slice(0, 12).reverse();
+  html += '<div class="chart-card"><div class="chart-title">Tokens by Review</div>';
+  if (!tokenSeries.length) {
+    html += '<div class="empty" style="padding:12px">No AI usage recorded</div>';
+  } else {
+    const tokenMax = Math.max(1, ...tokenSeries.map(r => r.token_usage.total_tokens || 0));
+    tokenSeries.forEach(r => {
+      const value = r.token_usage.total_tokens || 0;
+      const pct = (value / tokenMax * 100).toFixed(0);
+      const when = new Date(r.timestamp).toLocaleDateString();
+      const rev = r.commit_hash ? r.commit_hash.substring(0, 7) : 'no-commit';
+      html += '<div class="bar-row"><div class="bar-label token-label" title="' + escapeHtml(when + ' ' + rev) + '">' + escapeHtml(when + ' ' + rev) + '</div>';
+      html += '<div class="bar-track"><div class="bar-fill token-fill" style="width:' + pct + '%"></div></div>';
+      html += '<div class="bar-value wide">' + value.toLocaleString() + '</div></div>';
     });
   }
   html += '</div>';
@@ -206,10 +238,11 @@ function render(data) {
     html += '<div class="report-risk">Risk: ' + Math.round((r.risk_score || 0) * 100) + '% <span class="badge ' + badgeCls + '">' + badgeTxt + '</span></div>';
     html += '<div class="report-files">' + (r.files_reviewed || []).join(', ') + '</div>';
     html += sevBar;
-    html += '<div class="report-meta"><span>' + (r.total_findings || 0) + ' findings</span><span>' + (r.blocking || 0) + ' blocking</span><span>Click for details</span></div>';
+    html += '<div class="report-meta"><span>' + (r.total_findings || 0) + ' findings</span><span>' + (r.blocking || 0) + ' blocking</span><span' + (r.token_usage ? '' : ' title="report predates token tracking"') + '>' + tokenLabel(r) + '</span><span>Click for details</span></div>';
 
     // Detail panel (per-finding)
     html += '<div class="detail-panel">';
+    html += tokenDetail(r);
     const findingsList = r.findings || [];
     if (!findingsList.length) {
       html += '<div class="no-findings">No findings - clean commit</div>';
@@ -265,6 +298,34 @@ function render(data) {
 
 function sevColor(sev) {
   return {critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#22c55e'}[sev] || '#64748b';
+}
+
+// One-line token summary for a report card. Three states, never two:
+//   no field      -> "—" (report written before token tracking)
+//   field, 0 calls -> "0 tokens (regex)"
+//   field, N calls -> "1,234 tokens" (+ "(est.)" when the provider returned
+//                     no usage and PRISM had to estimate)
+function tokenLabel(r) {
+  const tu = r.token_usage;
+  if (!tu) return '—';
+  if (!tu.calls) return '0 tokens (regex)';
+  const total = (tu.total_tokens || 0).toLocaleString();
+  return total + ' tokens' + (tu.estimated_calls ? ' (est.)' : '');
+}
+
+// Expanded-view breakdown: input/output split plus per-provider totals.
+function tokenDetail(r) {
+  const tu = r.token_usage;
+  if (!tu || !tu.calls) return '';
+  const parts = Object.entries(tu.by_provider || {}).map(([name, v]) => {
+    const sum = (v.input_tokens || 0) + (v.output_tokens || 0);
+    return escapeHtml(name) + ': ' + v.calls + ' call(s), ' + sum.toLocaleString() + ' tok';
+  });
+  const split = (tu.input_tokens || 0).toLocaleString() + ' in / '
+              + (tu.output_tokens || 0).toLocaleString() + ' out';
+  const est = tu.estimated_calls ? ' (' + tu.estimated_calls + ' estimated)' : '';
+  return '<div class="finding-loc">Tokens: ' + split + est
+       + (parts.length ? ' &middot; ' + parts.join(' &middot; ') : '') + '</div>';
 }
 
 function escapeHtml(s) {

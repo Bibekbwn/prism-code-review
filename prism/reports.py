@@ -32,8 +32,15 @@ def save_report(
     commit_allowed: bool,
     commit_hash: str = "",
     branch: str = "",
+    token_usage: Optional[dict] = None,
 ) -> str:
-    """Save a review report to .prism-reports/ and return the report ID."""
+    """Save a review report to .prism-reports/ and return the report ID.
+
+    ``token_usage`` is the per-review ledger snapshot from
+    :func:`prism.token_usage.summary`. Reports written before token tracking
+    existed simply lack the field; readers must treat "absent" as unknown, not
+    as zero, or cost trends get a fake dip.
+    """
     _ensure_dir()
 
     report_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
@@ -47,6 +54,7 @@ def save_report(
         "blocking": blocking,
         "risk_score": risk_score,
         "commit_allowed": commit_allowed,
+        "token_usage": token_usage,
         "findings": findings,
     }
 
@@ -74,6 +82,7 @@ def _update_index(report_id: str, report: dict):
         "blocking": report["blocking"],
         "risk_score": report["risk_score"],
         "commit_allowed": report["commit_allowed"],
+        "token_usage": report.get("token_usage"),
     })
     # Keep last 500 entries
     if len(index["reports"]) > 500:
@@ -118,6 +127,14 @@ def get_findings_history() -> dict:
         "findings_by_severity": {"critical": 0, "high": 0, "medium": 0, "low": 0},
         "findings_by_agent": {},
         "findings_by_rule": {},
+        # Token accounting. ``ai_reviews`` counts only reports that actually
+        # spent tokens, so a repo that never configured a key shows 0 rather
+        # than "one review with zero tokens".
+        "total_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "ai_reviews": 0,
+        "estimated_token_calls": 0,
     }
 
     for r in index["reports"]:
@@ -134,6 +151,15 @@ def get_findings_history() -> dict:
     for r in index["reports"]:
         report = load_report(r["id"])
         if report:
+            token_usage = report.get("token_usage")
+            if token_usage:
+                trends["total_tokens"] += token_usage.get("total_tokens", 0)
+                trends["input_tokens"] += token_usage.get("input_tokens", 0)
+                trends["output_tokens"] += token_usage.get("output_tokens", 0)
+                trends["estimated_token_calls"] += token_usage.get(
+                    "estimated_calls", 0)
+                if token_usage.get("calls"):
+                    trends["ai_reviews"] += 1
             for f in report.get("findings", []):
                 sev = f.get("severity", "unknown")
                 agent = f.get("agent", "unknown")
@@ -198,9 +224,22 @@ def get_report_summary() -> str:
         f"Total reviews: {trends['total_reviews']}",
         f"Total findings: {trends['total_findings']}",
         f"Commits blocked: {trends['commits_blocked']}",
+    ]
+
+    if trends["total_tokens"]:
+        lines.append(
+            f"Total tokens: {trends['total_tokens']:,} "
+            f"(in {trends['input_tokens']:,} / out {trends['output_tokens']:,}) "
+            f"across {trends['ai_reviews']} AI review(s)")
+        if trends["estimated_token_calls"]:
+            lines.append(
+                f"  {trends['estimated_token_calls']} call(s) used estimated "
+                f"counts (provider reported no usage)")
+
+    lines.extend([
         "",
         "By Severity:",
-    ]
+    ])
     for sev, count in trends["findings_by_severity"].items():
         lines.append(f"  {sev}: {count}")
 

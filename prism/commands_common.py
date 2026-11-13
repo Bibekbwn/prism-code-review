@@ -199,6 +199,9 @@ def _finalize_review(all_results, all_findings_list, risk_scores, files,
         commit_allowed=allowed,
         commit_hash=commit_hash,
         branch=branch,
+        # Same snapshot the --json output reports, so the CLI, the report file
+        # and the dashboard can never disagree about a review's token count.
+        token_usage=token_usage.summary(),
     )
     record_commit(all_findings_list, commit_hash)
 

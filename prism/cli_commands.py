@@ -301,6 +301,9 @@ def _save_check_report(args, results, config, score, all_findings_list):
         commit_allowed=allowed,
         commit_hash=commit_hash,
         branch=branch,
+        # Keep the persisted report in step with the --json output and the
+        # dashboard, which all read this same ledger snapshot.
+        token_usage=token_usage.summary(),
     )
     record_commit(all_findings_list, commit_hash)
     if not args.json:
