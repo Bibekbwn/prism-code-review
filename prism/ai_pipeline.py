@@ -7,6 +7,7 @@ for parsing/verification.
 """
 
 import os
+import re
 import time
 import logging
 import concurrent.futures
@@ -132,13 +133,119 @@ def build_skeleton(file_path, content):
     return "\n".join(skeleton)
 
 
+def _build_line_map(diff_text):
+    """Map each line of a unified diff to the new-file line it represents.
+
+    Returns a list the same length as ``diff_text.split("\\n")``; each entry is
+    the 1-based new-file line for that diff line, or ``None`` for hunk headers
+    and removed lines. The model only sees the diff, so its 1-based line
+    numbers index into this list.
+    """
+    mapping = []
+    new_line = None
+    for line in diff_text.split("\n"):
+        if line.startswith("@@"):
+            match = re.search(r"\+(\d+)(?:,\d+)?", line)
+            new_line = int(match.group(1)) if match else None
+            mapping.append(None)
+            continue
+        if new_line is None:
+            mapping.append(None)
+            continue
+        if line.startswith("+++") or line.startswith("---"):
+            mapping.append(None)
+            continue
+        if line.startswith("+"):
+            mapping.append(new_line)
+            new_line += 1
+        elif line.startswith("-"):
+            mapping.append(None)
+        else:
+            mapping.append(new_line)
+            new_line += 1
+    return mapping
+
+
+def _remap_one(finding, line_map):
+    """Translate a diff-relative finding line into a real file line."""
+    if not finding.line:
+        return
+    index = finding.line - 1
+    if 0 <= index < len(line_map) and line_map[index]:
+        finding.line = line_map[index]
+
+
+def _remap_findings(findings, line_map):
+    for finding in findings:
+        _remap_one(finding, line_map)
+
+
+def _review_chunks(call_fn, model, system_prompt, file_path, chunks, agent_name,
+                   skeleton, timeout, cross_file_context, line_map):
+    """Call the model once per chunk, offsetting and remapping line numbers.
+
+    Returns ``(findings, failure)``: ``failure`` is ``(error, blocking)`` when
+    every chunk failed and no finding survived.
+    """
+    all_findings = []
+    chunk_failed = None
+    for chunk_start, chunk_text in chunks:
+        result = call_fn(
+            model, system_prompt, file_path,
+            chunk_text, agent_name, skeleton or "", timeout,
+            cross_file_context,
+        )
+        error, blocking = _failed_message(result)
+        if error:
+            logger.error("%s chunk at line %d failed: %s",
+                         agent_name, chunk_start, error)
+            if chunk_failed is None:
+                chunk_failed = (error, blocking)
+            continue
+        for finding in parse_findings(result, file_path, agent_name):
+            if finding.line:
+                finding.line = finding.line + chunk_start - 1
+            if line_map:
+                _remap_one(finding, line_map)
+            all_findings.append(finding)
+
+    if chunk_failed and not all_findings:
+        return [], chunk_failed
+
+    seen = set()
+    deduped = []
+    for finding in all_findings:
+        key = (finding.file, finding.line, finding.rule_id)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(finding)
+    return deduped, None
+
+
+def _call_and_finalize(call_fn, model, system_prompt, file_path, prompt,
+                       agent_name, skeleton, timeout, cross_file_context,
+                       finalize):
+    """Run one model call and turn a transport error into a blocking finding."""
+    result = call_fn(model, system_prompt, file_path, prompt, agent_name,
+                     skeleton, timeout, cross_file_context)
+    error, blocking = _failed_message(result)
+    if error:
+        logger.error("%s failed: %s", agent_name, error)
+        return [_error_finding(agent_name, file_path,
+                               "{} failed: {}".format(agent_name, error),
+                               blocking=blocking)]
+    return finalize(result)
+
+
 def review_with_agent(system_prompt, file_path, content, agent_name,
                       skeleton="", line_count=None, diff="", fast=False):
     """Full pipeline: get model, call LLM, parse findings, verify.
 
     Uses `diff` (git diff hunks) when available; falls back to full content.
-    Adapts to file size via TIERS. When `fast=True`, whole-file agents use
-    two-pass summarization instead of running on every chunk.
+    Findings are remapped from diff lines to real new-file lines, so a PR
+    review never sends the whole file to the model. Adapts to file size via
+    TIERS. When `fast=True`, whole-file agents use two-pass summarization
+    instead of running on every chunk.
     """
     model, provider, call_fn = get_model()
     if model is None:
@@ -146,11 +253,11 @@ def review_with_agent(system_prompt, file_path, content, agent_name,
         return [_error_finding(agent_name, file_path,
                                "no API key configured for provider")]
 
-    if line_count is None:
-        line_count = content.count("\n") + 1
+    has_diff = bool(diff and diff.strip())
+    review_content = diff if has_diff else content
+    line_map = _build_line_map(review_content) if has_diff else None
 
-    review_content = diff if diff and diff.strip() else content
-    if diff and diff.strip():
+    if line_count is None or has_diff:
         line_count = review_content.count("\n") + 1
 
     repo_path = os.getenv("PRISM_REPO_PATH", os.getcwd())
@@ -169,19 +276,18 @@ def review_with_agent(system_prompt, file_path, content, agent_name,
         except ValueError:
             pass
 
+    def _finalize(raw):
+        findings = parse_findings(raw, file_path, agent_name)
+        if line_map:
+            _remap_findings(findings, line_map)
+        return verify_findings(findings, file_path, content)
+
     try:
-        chunks = chunk_content(content)
+        chunks = chunk_content(review_content)
         if len(chunks) == 1:
-            result = call_fn(model, system_prompt, file_path,
-                             content, agent_name, skeleton, timeout, cross_file_context)
-            error, blocking = _failed_message(result)
-            if error:
-                logger.error("%s failed: %s", agent_name, error)
-                return [_error_finding(agent_name, file_path,
-                                       "{} failed: {}".format(agent_name, error),
-                                       blocking=blocking)]
-            raw = parse_findings(result, file_path, agent_name)
-            return verify_findings(raw, file_path, content)
+            return _call_and_finalize(
+                call_fn, model, system_prompt, file_path, review_content,
+                agent_name, skeleton, timeout, cross_file_context, _finalize)
 
         if needs_whole_file and fast:
             logger.info(
@@ -192,58 +298,23 @@ def review_with_agent(system_prompt, file_path, content, agent_name,
             summaries = _summarize_chunks(
                 model, chunks, file_path, skeleton, timeout, call_fn, provider
             )
-            prompt_content = "## Chunk Summaries\n{}".format(summaries)
-            result = call_fn(
-                model, system_prompt, file_path,
-                prompt_content, agent_name, skeleton, timeout, cross_file_context,
-            )
-            error, blocking = _failed_message(result)
-            if error:
-                logger.error("%s failed: %s", agent_name, error)
-                return [_error_finding(agent_name, file_path,
-                                       "{} failed: {}".format(agent_name, error),
-                                       blocking=blocking)]
-            raw = parse_findings(result, file_path, agent_name)
-            return verify_findings(raw, file_path, content)
+            return _call_and_finalize(
+                call_fn, model, system_prompt, file_path,
+                "## Chunk Summaries\n{}".format(summaries),
+                agent_name, skeleton, timeout, cross_file_context, _finalize)
 
         logger.info(
             "%s: %d-line file split into %d chunks (timeout=%ds)",
             agent_name, line_count, len(chunks), timeout
         )
-        all_findings = []
-        chunk_failed = None
-        for chunk_start, chunk_text in chunks:
-            chunk_skeleton = skeleton if skeleton else ""
-            result = call_fn(
-                model, system_prompt, file_path,
-                chunk_text, agent_name, chunk_skeleton, timeout, cross_file_context,
-            )
-            error, blocking = _failed_message(result)
-            if error:
-                logger.error("%s chunk at line %d failed: %s",
-                             agent_name, chunk_start, error)
-                if chunk_failed is None:
-                    chunk_failed = (error, blocking)
-                continue
-            findings = parse_findings(result, file_path, agent_name)
-            for f in findings:
-                if f.line:
-                    f.line = f.line + chunk_start - 1
-            all_findings.extend(findings)
-
-        if chunk_failed and not all_findings:
-            error, blocking = chunk_failed
+        deduped, failed = _review_chunks(
+            call_fn, model, system_prompt, file_path, chunks, agent_name,
+            skeleton, timeout, cross_file_context, line_map)
+        if failed:
+            error, blocking = failed
             return [_error_finding(agent_name, file_path,
                                    "{} failed: {}".format(agent_name, error),
                                    blocking=blocking)]
-
-        seen = set()
-        deduped = []
-        for f in all_findings:
-            key = (f.file, f.line, f.rule_id)
-            if key not in seen:
-                seen.add(key)
-                deduped.append(f)
         return verify_findings(deduped, file_path, content)
 
     except Exception as exc:

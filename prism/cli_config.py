@@ -22,9 +22,25 @@ def enabled_agents(config):
     return list(agents)
 
 
+CONFIG_FILES = ["prism.json", ".prism.json"]
+
+
+def get_config_path():
+    """Return the config file that ``load_config`` would read, or the default.
+
+    ``prism config --set`` must write back to the same file it read from;
+    otherwise a repo using ``.prism.json`` silently gets a second
+    ``prism.json`` that shadows it.
+    """
+    for name in CONFIG_FILES:
+        if Path(name).exists():
+            return name
+    return CONFIG_FILES[0]
+
+
 def load_config():
     """Load prism.json or .prism.json, falling back to defaults."""
-    for name in ["prism.json", ".prism.json"]:
+    for name in CONFIG_FILES:
         p = Path(name)
         if p.exists():
             with open(p) as f:

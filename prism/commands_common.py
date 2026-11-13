@@ -11,6 +11,7 @@ import sys
 import subprocess
 from pathlib import Path
 
+from prism import token_usage
 from prism.agents import AgentResult, Finding, Severity, Blocker, risk_score, quality_gates_met
 from prism.autofix import apply_fixes
 from prism.cli_config import CONFIDENCE_THRESHOLD, load_deviation_policy, is_deviation
@@ -177,8 +178,10 @@ def _empty_staged_output(files, skipped=None):
 
 
 def _finalize_review(all_results, all_findings_list, risk_scores, files,
-                     config, json_mode, test_results=None, args=None):
-    report_text, blocking = format_report(all_results, config, risk_scores)
+                     config, json_mode, test_results=None, args=None,
+                     audit=False):
+    report_text, blocking = format_report(all_results, config, risk_scores,
+                                          audit=audit)
     if not json_mode:
         print(report_text)
 
@@ -202,10 +205,12 @@ def _finalize_review(all_results, all_findings_list, risk_scores, files,
     if json_mode:
         output = _json_output_staged(all_results, config, risk_scores, files,
                                      all_findings_list, blocking, test_results)
+        output["token_usage"] = token_usage.summary()
         print(json.dumps(output, indent=2, default=str))
-        sys.exit(0 if output["commit_allowed"] else 1)
+        sys.exit(0 if audit or output["commit_allowed"] else 1)
 
     print("")
+    print(token_usage.format_summary())
     print("Report saved: .prism-reports/{}.json".format(report_id))
     print("")
     print("=" * 50)
@@ -228,7 +233,7 @@ def _finalize_review(all_results, all_findings_list, risk_scores, files,
         from prism.commands_reports import build_dashboard
         build_dashboard(open_browser=True)
 
-    sys.exit(0 if allowed else 1)
+    sys.exit(0 if audit or allowed else 1)
 
 
 def _dashboard_enabled(args):

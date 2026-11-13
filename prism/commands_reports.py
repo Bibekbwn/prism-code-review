@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from prism.cli_config import load_config, load_deviation_policy
+from prism.cli_config import load_config, load_deviation_policy, get_config_path
 from prism.codebase_cache import get_changed_files, get_cache_stats, clear_cache
 from prism.feedback import load_feedback, suppress_summary
 from prism.reports import load_report, delete_report, clear_reports, get_report_summary
@@ -168,9 +168,11 @@ def _cmd_config(args):
         except json.JSONDecodeError:
             pass
         _set_config_value(config, key, value)
-        with open("prism.json", "w") as f:
+        # Write back to the file we read from, not always prism.json.
+        config_path = get_config_path()
+        with open(config_path, "w") as f:
             json.dump(config, f, indent=2)
-        print("Set {} = {}".format(key, value))
+        print("Set {} = {} ({})".format(key, value, config_path))
     elif getattr(args, "get", None):
         print("{} = {}".format(args.get, _get_config_value(config, args.get)))
     else:

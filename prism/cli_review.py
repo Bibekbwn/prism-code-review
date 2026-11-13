@@ -9,6 +9,20 @@ from prism.ai_common import build_skeleton
 from prism.feedback import scan_dependencies, should_suppress
 from prism.modes import get_mode, select_agents
 from prism import agents_policy, agents_quality
+from prism import agents_security, agents_test
+
+# The regex agents must be registered for any review path (CLI, LSP, library).
+_REGEX_AGENT_MODULES = (agents_security, agents_test)
+
+# Importing the AI agent modules runs their @register_agent decorators. Without
+# this, the default agent list referenced ai_* names that were never in the
+# registry, so run_pipeline logged "Agent not found" and skipped every AI
+# review. The tuple keeps the imports referenced for linters.
+from prism import (ai_security, ai_quality, ai_policy, ai_test,
+                   ai_architecture, ai_performance)
+
+_AI_AGENT_MODULES = (ai_security, ai_quality, ai_policy, ai_test,
+                     ai_architecture, ai_performance)
 
 from prism.cli_config import (
     CONFIDENCE_THRESHOLD, load_deviation_policy, is_deviation, enabled_agents,
@@ -229,8 +243,13 @@ def review_file(file_path, config, effort="balanced", fast=False, diff=""):
     return results, score
 
 
-def format_report(results, config, risk_scores=None):
-    """Format review results as a human-readable report string."""
+def format_report(results, config, risk_scores=None, audit=False):
+    """Format review results as a human-readable report string.
+
+    ``audit`` is set by ``scan``: the same findings are reported, but the
+    verdict is advisory ("no commit gate") because a whole-project audit is
+    not a pre-commit check.
+    """
     lines = []
     blocking_sev = set(config.get("block_on", ["critical", "high"]))
     conf_threshold = config.get("confidence_threshold", CONFIDENCE_THRESHOLD)
@@ -301,8 +320,13 @@ def format_report(results, config, risk_scores=None):
 
     if blocking_count > 0 or not gates_ok:
         lines.append("")
-        lines.append("COMMIT BLOCKED - resolve {} issue(s) before pushing.".format(
-            blocking_count))
+        if audit:
+            lines.append(
+                "AUDIT: {} issue(s) found - review-only, no commit gate.".format(
+                    blocking_count))
+        else:
+            lines.append("COMMIT BLOCKED - resolve {} issue(s) before pushing.".format(
+                blocking_count))
     else:
         lines.append("")
         lines.append("All checks passed.")

@@ -39,6 +39,8 @@ Multi-agent code review pipeline that runs **before every commit**. 10 agents (4
 | **Visual dashboard** | Self-contained HTML with severity charts, agent charts, filters, and per-finding detail |
 | **Multi-provider** | Switch between Gemini, Claude, and OpenAI with one command |
 | **Command-only setup** | `prism key set` writes the `.env` for you — no file editing ever |
+| **Whole-project audit** | `prism scan <path>` reviews every file, not just the diff |
+| **Environment diagnostics** | `prism doctor` checks keys, SDKs and config before you wonder why AI is silent |
 | **Pre-commit hook** | Blocks commits with critical/high findings automatically |
 | **Auto-fix** | One-click fixes for secrets, `eval()`, `debugger`, banned patterns |
 | **Codebase cache** | Only re-scans changed files on subsequent runs |
@@ -120,26 +122,35 @@ The `prism key set` command writes `.env` for you and sets `MODEL_PROVIDER`.
 Switching provider removes the previous provider's key automatically, so
 exactly one key is active at a time. You never need to open `.env` or any file.
 
-### 2. Review a file
+### 2. Check the setup
+
+```bash
+prism doctor        # key present? SDK installed? config valid?
+```
+
+`doctor` explains why AI agents are silent when something is misconfigured, and it
+never fails the run.
+
+### 3. Review a file
 
 ```bash
 prism check path/to/file.py
 ```
 
-### 3. Review staged changes (before commit)
+### 4. Review staged changes (before commit)
 
 ```bash
 git add .
 prism check-staged --effort balanced
 ```
 
-### 4. Install the pre-commit hook (blocks commits with critical/high findings)
+### 5. Install the pre-commit hook (blocks commits with critical/high findings)
 
 ```bash
 prism install-hook
 ```
 
-### 5. View the visual dashboard
+### 6. View the visual dashboard
 
 ```bash
 prism dashboard
@@ -242,6 +253,36 @@ prism check-staged --fast                # Two-pass summarization for large file
 | `--fast` | Two-pass summarization for large files |
 
 **Exit code:** `0` if commit allowed, `1` if blocking findings or failed quality gates exist (the pre-commit hook uses this).
+
+---
+
+#### `prism scan <path>` — Review every file in a directory (whole-project audit)
+
+`check` / `check-staged` / `check-diff` review one file or a diff. `scan` reviews the
+**full content of every file** under a path, which is what you want when onboarding a
+project, running a nightly audit, or establishing a baseline.
+
+```bash
+prism scan                         # Audit the current directory
+prism scan src/                    # Audit one directory
+prism scan . --effort lite         # Regex agents only (free, fast)
+prism scan src/ --effort max       # Deeper AI pass over every file
+prism scan src/ --json             # Machine-readable JSON
+```
+
+| Flag | Description |
+|------|-------------|
+| `path` | Root directory to scan (default: `.`) |
+| `--json` | Output results as JSON (status lines go to stderr) |
+| `--effort {lite,balanced,max}` | AI review effort level |
+| `--fast` | Two-pass summarization for large files |
+| `--no-dashboard` | Do not open the HTML dashboard after review |
+
+**Behavior:** Directories such as `.git`, `node_modules`, `.venv`, `__pycache__`,
+`dist` and `build` are skipped, and `.prismignore` still applies. Files whose content
+hash is unchanged since the last review are served from the codebase cache, so repeat
+runs are cheap. The verdict is **advisory** — it prints `AUDIT: N issue(s) found -
+review-only, no commit gate.` and always exits `0`, so a scan never breaks a pipeline.
 
 ---
 
@@ -406,6 +447,19 @@ prism uninstall-hook
 #### `prism init` — Create prism.json config
 
 See [Configuration Commands](#configuration-commands).
+
+#### `prism doctor` — Check that the environment is ready
+
+```bash
+prism doctor
+```
+
+Reports the Python/platform versions, whether `.env` and `prism.json` exist, git
+availability, the active effort level and agent count, and then a per-provider table:
+key present, SDK installed, and default model. Missing optional keys are **warnings** —
+the regex agents work with no API key at all — so the command is a diagnostic, not a
+gate, and always exits `0`. It flags real problems such as an invalid `effort` value,
+an enabled provider whose SDK is missing, or an invalid `MODEL_PROVIDER`.
 
 ---
 

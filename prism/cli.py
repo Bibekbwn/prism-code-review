@@ -35,8 +35,9 @@ _registered_agents = (agents_policy, agents_quality, agents_security,
 
 from prism.cli_commands import (
     _run_self_tests, _run_benchmark, _cmd_check, _cmd_check_staged,
-    _cmd_check_diff,
+    _cmd_check_diff, _cmd_scan,
 )
+from prism.ai_providers import PROVIDERS as _PROVIDERS
 from prism.commands_reports import (
     _cmd_reports, _cmd_report, _cmd_delete_report, _cmd_clear_reports,
     _cmd_dashboard, _cmd_stats, _cmd_config, _cmd_policy, _cmd_feedback,
@@ -44,7 +45,7 @@ from prism.commands_reports import (
 )
 from prism.commands_setup import (
     _cmd_key, _cmd_init, _cmd_install_hook, _cmd_uninstall_hook, _cmd_version,
-    _cmd_help, _cmd_agents, _cmd_ignore, _cmd_mode,
+    _cmd_help, _cmd_agents, _cmd_ignore, _cmd_mode, _cmd_doctor,
 )
 
 
@@ -71,6 +72,8 @@ def build_parser():
                        default="balanced", help="AI review effort level")
     check.add_argument("--fast", action="store_true",
                        help="Use two-pass summarization for large files")
+    check.add_argument("--no-dashboard", action="store_true",
+                       help="Do not open the HTML dashboard after review")
 
     check_staged = sub.add_parser("check-staged", help="Review staged git changes")
     check_staged.add_argument("--json", action="store_true", help="Output results as JSON")
@@ -108,6 +111,21 @@ def build_parser():
     sub.add_parser("reports", help="Show review history")
     sub.add_parser("report", help="Show a specific report by ID").add_argument("id")
     sub.add_parser("dashboard", help="Open visual report dashboard in browser")
+    sub.add_parser("doctor", help="Check environment and provider setup")
+
+    scan_cmd = sub.add_parser(
+        "scan",
+        help="Review every file under a path (whole-project audit)")
+    scan_cmd.add_argument("path", nargs="?", default=".",
+                          help="Root directory to scan (default: .)")
+    scan_cmd.add_argument("--json", action="store_true",
+                          help="Output results as JSON")
+    scan_cmd.add_argument("--effort", choices=["lite", "balanced", "max"],
+                          default="balanced", help="AI review effort level")
+    scan_cmd.add_argument("--fast", action="store_true",
+                          help="Use two-pass summarization for large files")
+    scan_cmd.add_argument("--no-dashboard", action="store_true",
+                          help="Do not open the HTML dashboard after review")
 
     delete_cmd = sub.add_parser("delete-report", help="Delete a specific report")
     delete_cmd.add_argument("id", help="Report ID to delete")
@@ -163,8 +181,9 @@ def build_parser():
     key_cmd = sub.add_parser("key", help="Manage API keys")
     key_cmd.add_argument("action", choices=["set", "delete", "status"],
                          help="Key action to perform")
-    key_cmd.add_argument("--provider", choices=["gemini", "openai", "claude"],
-                         default="gemini", help="AI provider")
+    key_cmd.add_argument("--provider", choices=list(_PROVIDERS),
+                         default=None,
+                         help="AI provider (default: gemini for set)")
     key_cmd.add_argument("--key", help="API key value (required for set)")
 
     return parser
@@ -192,6 +211,8 @@ _COMMANDS = {
     "check-staged": _cmd_check_staged,
     "check-diff": _cmd_check_diff,
     "diff": _cmd_check_diff,  # documented alias for check-diff
+    "scan": _cmd_scan,
+    "doctor": _cmd_doctor,
     "test": _run_self_tests,
     "benchmark": _run_benchmark,
     "key": _cmd_key,

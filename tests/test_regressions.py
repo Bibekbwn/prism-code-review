@@ -3,6 +3,7 @@
 Each test maps to a specific P0/P1/finding and would have caught it.
 """
 
+import argparse
 import json
 import os
 import shutil
@@ -1251,3 +1252,1115 @@ class TestAgentModeSelection:
         assert any(r.agent_name == "quality" for r in before)
         assert not any(r.agent_name == "quality" for r in after)
         assert any(r.agent_name == "test" for r in after)
+
+
+class TestConfigFilePath:
+    def test_set_writes_dot_prism_json(self, tmp_path, monkeypatch):
+        import argparse
+        import prism.commands_reports as cr
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".prism.json").write_text(json.dumps(
+            {"block_on": ["critical"], "agents": ["security"]}))
+        cr._cmd_config(argparse.Namespace(
+            get=None, set=["confidence_threshold", "0.9"]))
+        # Must NOT create a shadowing prism.json.
+        assert not (tmp_path / "prism.json").exists()
+        cfg = json.loads((tmp_path / ".prism.json").read_text())
+        assert cfg["confidence_threshold"] == 0.9
+        assert cfg["agents"] == ["security"]
+
+    def test_set_writes_prism_json_when_present(self, tmp_path, monkeypatch):
+        import argparse
+        import prism.commands_reports as cr
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "prism.json").write_text(json.dumps({"block_on": ["critical"]}))
+        cr._cmd_config(argparse.Namespace(
+            get=None, set=["confidence_threshold", "0.8"]))
+        cfg = json.loads((tmp_path / "prism.json").read_text())
+        assert cfg["confidence_threshold"] == 0.8
+
+
+class TestKeyDeleteProvider:
+    def _env(self, tmp_path):
+        (tmp_path / ".env").write_text(
+            'GEMINI_API_KEY="g"\nOPENAI_API_KEY="o"\n'
+            'ANTHROPIC_API_KEY="a"\nMODEL_PROVIDER=gemini\n')
+
+    def test_delete_single_provider(self, tmp_path, monkeypatch):
+        import argparse
+        import prism.commands_setup as cs
+
+        monkeypatch.chdir(tmp_path)
+        self._env(tmp_path)
+        cs._cmd_key(argparse.Namespace(
+            action="delete", provider="claude", key=None))
+        env = (tmp_path / ".env").read_text()
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "GEMINI_API_KEY" in env
+        assert "OPENAI_API_KEY" in env
+
+    def test_delete_all_without_provider(self, tmp_path, monkeypatch):
+        import argparse
+        import prism.commands_setup as cs
+
+        monkeypatch.chdir(tmp_path)
+        self._env(tmp_path)
+        cs._cmd_key(argparse.Namespace(
+            action="delete", provider=None, key=None))
+        env = (tmp_path / ".env").read_text()
+        assert "API_KEY" not in env
+        assert "MODEL_PROVIDER=gemini" in env
+
+
+class TestStagedPromptRestage:
+    def test_prompt_restages_fixed_files(self, tmp_path, monkeypatch):
+        import prism.cli_commands as cc
+
+        target = tmp_path / "app.js"
+        target.write_text("function f() {\n    debugger;\n}\n")
+
+        finding = _finding(agent="policy", severity=Severity.LOW,
+                           category="Banned Pattern", message="Remove debugger",
+                           file=str(target), line=2, rule_id="POL-203")
+        results = [AgentResult("policy", [finding])]
+
+        calls = {}
+        monkeypatch.setattr(cc, "get_auto_fixable", lambda fs: list(fs))
+        monkeypatch.setattr(cc, "generate_fix", lambda f, c: "# fixed")
+        monkeypatch.setattr(
+            cc, "_apply_fixes_with_preview",
+            lambda path, content, fixes, assume_yes=True: True)
+        monkeypatch.setattr(cc, "record_fix", lambda *a, **k: None)
+
+        def fake_restage(paths):
+            calls["paths"] = list(paths)
+            return True
+
+        monkeypatch.setattr(cc, "_restage", fake_restage)
+        monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
+        monkeypatch.setattr(sys, "stdin", type("S", (), {"isatty": lambda s: True})())
+
+        fixed = cc._prompt_staged_fixes(results, {"block_on": ["critical", "high"]})
+        assert fixed == [str(target)]
+        assert calls["paths"] == [str(target)]
+
+
+class TestAIAgentWrappers:
+    AGENTS = [
+        ("prism.ai_security", "AISecurityAgent"),
+        ("prism.ai_quality", "AIQualityAgent"),
+        ("prism.ai_policy", "AIPolicyAgent"),
+        ("prism.ai_test", "AITestAgent"),
+        ("prism.ai_architecture", "AIArchitectureAgent"),
+        ("prism.ai_performance", "AIPerformanceAgent"),
+    ]
+
+    @pytest.mark.parametrize("mod_name,cls_name", AGENTS)
+    def test_wrapper_returns_finding(self, mod_name, cls_name, monkeypatch):
+        import importlib
+        import prism.ai_pipeline as ap
+        import prism.ai_graph as ag
+
+        mod = importlib.import_module(mod_name)
+        agent = getattr(mod, cls_name)()
+
+        payload = {
+            "findings": [{
+                "severity": "low", "category": "Test",
+                "message": "test finding", "file": "app.py", "line": 1,
+                "suggestion": "fix it", "suggested_code": None,
+            }],
+            "summary": "ok",
+        }
+
+        monkeypatch.setattr(
+            ap, "get_model",
+            lambda *a, **k: (object(), "gemini", lambda *a, **k: payload))
+        monkeypatch.setattr(ag, "build_import_graph", lambda *a, **k: {})
+        monkeypatch.setattr(ag, "get_cross_file_context", lambda *a, **k: "")
+
+        findings = agent._check("app.py", "x = 1\n", "")
+        assert any(f.category == "Test" for f in findings)
+
+    @pytest.mark.parametrize("mod_name,cls_name", AGENTS)
+    def test_wrapper_no_key_is_non_blocking(self, mod_name, cls_name, monkeypatch):
+        import importlib
+        import prism.ai_pipeline as ap
+        import prism.ai_graph as ag
+
+        mod = importlib.import_module(mod_name)
+        agent = getattr(mod, cls_name)()
+
+        monkeypatch.setattr(ap, "get_model", lambda *a, **k: (None, None, None))
+        monkeypatch.setattr(ag, "build_import_graph", lambda *a, **k: {})
+        monkeypatch.setattr(ag, "get_cross_file_context", lambda *a, **k: "")
+
+        findings = agent._check("app.py", "x = 1\n", "")
+        assert len(findings) == 1
+        assert findings[0].severity.value in ("low", "info")
+
+
+class TestProviderDispatch:
+    REPLY = {
+        "findings": [{
+            "severity": "low", "category": "stub", "message": "stub finding",
+            "file": "app.py", "line": 1, "suggestion": "fix",
+        }],
+        "summary": "ok",
+    }
+
+    def _fake_anthropic(self):
+        import types
+        mod = types.ModuleType("anthropic")
+        captured = {}
+        reply = self.REPLY
+
+        class _Messages:
+            def create(self, **kwargs):
+                captured["messages"] = kwargs
+                return types.SimpleNamespace(content=[
+                    types.SimpleNamespace(text=json.dumps(reply))])
+
+        class _Client:
+            def __init__(self, api_key=None):
+                captured["api_key"] = api_key
+                self.messages = _Messages()
+
+        mod.Anthropic = _Client
+        return mod, captured
+
+    def _fake_openai(self):
+        import types
+        mod = types.ModuleType("openai")
+        captured = {}
+        reply = self.REPLY
+
+        class _Completions:
+            def create(self, **kwargs):
+                captured["completions"] = kwargs
+                return types.SimpleNamespace(choices=[types.SimpleNamespace(
+                    message=types.SimpleNamespace(
+                        content=json.dumps(reply)))])
+
+        class _Client:
+            def __init__(self, api_key=None):
+                captured["api_key"] = api_key
+                self.chat = types.SimpleNamespace(completions=_Completions())
+
+        mod.OpenAI = _Client
+        return mod, captured
+
+    def test_claude_dispatch(self, monkeypatch):
+        import sys
+        from prism import ai_providers as ap
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-1234567890")
+        fake, captured = self._fake_anthropic()
+        monkeypatch.setitem(sys.modules, "anthropic", fake)
+
+        client, provider, fn = ap.get_model("claude")
+        assert provider == "claude"
+        assert captured["api_key"] == "sk-ant-test-1234567890"
+
+        result = fn(client, "SYSTEM", "app.py", "x = 1\n", "ai_security", "", 10, "")
+        assert result["summary"] == "ok"
+        kwargs = captured["messages"]
+        assert kwargs["system"] == "SYSTEM"
+        assert kwargs["messages"][0]["role"] == "user"
+        assert "x = 1" in kwargs["messages"][0]["content"]
+
+    def test_openai_dispatch(self, monkeypatch):
+        import sys
+        from prism import ai_providers as ap
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-1234567890")
+        fake, captured = self._fake_openai()
+        monkeypatch.setitem(sys.modules, "openai", fake)
+
+        client, provider, fn = ap.get_model("openai")
+        assert provider == "openai"
+        assert captured["api_key"] == "sk-test-1234567890"
+
+        result = fn(client, "SYSTEM", "app.py", "x = 1\n", "ai_security", "", 10, "")
+        assert result["summary"] == "ok"
+        kwargs = captured["completions"]
+        assert kwargs["response_format"] == {"type": "json_object"}
+        assert kwargs["messages"][0]["role"] == "system"
+        assert "x = 1" in kwargs["messages"][1]["content"]
+
+    @pytest.mark.parametrize("provider,var", [
+        ("claude", "ANTHROPIC_API_KEY"),
+        ("openai", "OPENAI_API_KEY"),
+        ("gemini", "GEMINI_API_KEY"),
+    ])
+    def test_placeholder_key_rejected(self, monkeypatch, provider, var):
+        from prism import ai_providers as ap
+
+        monkeypatch.setenv(var, "your-key-here")
+        assert ap.get_model(provider) == (None, None, None)
+
+    def test_pipeline_uses_claude_provider(self, monkeypatch):
+        import sys
+        import prism.ai_pipeline as ap
+        import prism.ai_graph as ag
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-1234567890")
+        monkeypatch.setenv("MODEL_PROVIDER", "claude")
+        fake, captured = self._fake_anthropic()
+        monkeypatch.setitem(sys.modules, "anthropic", fake)
+        monkeypatch.setattr(ag, "build_import_graph", lambda *a, **k: {})
+        monkeypatch.setattr(ag, "get_cross_file_context", lambda *a, **k: "")
+
+        findings = ap.review_with_agent(
+            "SYSTEM", "app.py", "x = 1\n", "ai_security", "", 1)
+        assert any(f.category == "stub" for f in findings)
+
+
+class TestLSP:
+    def _stdin(self, monkeypatch, data):
+        import io
+        monkeypatch.setattr(
+            sys, "stdin", type("S", (), {"buffer": io.BytesIO(data)})())
+
+    def test_read_message_success(self, monkeypatch):
+        from prism import lsp
+        body = b'{"jsonrpc": "2.0", "id": 1}'
+        self._stdin(monkeypatch,
+                    b"Content-Length: " + str(len(body)).encode()
+                    + b"\r\n\r\n" + body)
+        assert lsp._read_message() == {"jsonrpc": "2.0", "id": 1}
+
+    def test_read_message_empty_body_returns_none(self, monkeypatch):
+        from prism import lsp
+        self._stdin(monkeypatch, b"Content-Length: 0\r\n\r\n")
+        assert lsp._read_message() is None
+
+    def test_read_message_bad_json_returns_none(self, monkeypatch):
+        from prism import lsp
+        body = b"not json"
+        self._stdin(monkeypatch,
+                    b"Content-Length: " + str(len(body)).encode()
+                    + b"\r\n\r\n" + body)
+        assert lsp._read_message() is None
+
+    def test_read_message_eof_returns_none(self, monkeypatch):
+        from prism import lsp
+        self._stdin(monkeypatch, b"")
+        assert lsp._read_message() is None
+
+    def test_send_message_writes_header(self, monkeypatch):
+        import io
+        from prism import lsp
+        buf = io.BytesIO()
+        monkeypatch.setattr(sys, "stdout", type("S", (), {"buffer": buf}))
+        lsp._send_message({"a": 1})
+        out = buf.getvalue()
+        assert out.startswith(b"Content-Length: ")
+        assert b"\r\n\r\n" in out
+
+    def test_review_to_diagnostics_maps_severity(self, monkeypatch):
+        from prism import lsp
+        from prism.agents import AgentResult, Finding, Severity
+        finding = Finding(agent="policy", severity=Severity.HIGH,
+                          category="cat", message="msg", file="a.py",
+                          line=3, rule_id="P-1")
+        monkeypatch.setattr(
+            lsp, "review_file",
+            lambda *a, **k: ([AgentResult("policy", [finding])], 0))
+        diags, err = lsp._review_file_to_diagnostics("a.py", {})
+        assert err is None
+        assert len(diags) == 1
+        assert diags[0]["severity"] == 1
+        assert diags[0]["range"]["start"]["line"] == 2
+        assert diags[0]["range"]["end"]["line"] == 2
+
+    def test_review_to_diagnostics_error(self, monkeypatch):
+        from prism import lsp
+
+        def boom(*a, **k):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(lsp, "review_file", boom)
+        diags, err = lsp._review_file_to_diagnostics("a.py", {})
+        assert diags == []
+        assert err == "boom"
+
+    def test_run_handles_all_messages(self, monkeypatch):
+        from prism import lsp
+        sent = []
+        monkeypatch.setattr(lsp, "_send_message", lambda m: sent.append(m))
+        monkeypatch.setattr(lsp, "load_config", lambda *a, **k: {})
+        monkeypatch.setattr(lsp, "_review_file_to_diagnostics",
+                            lambda *a, **k: ([], None))
+
+        class _Thread:
+            def __init__(self, target=None, daemon=None):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        monkeypatch.setattr(lsp.threading, "Thread", _Thread)
+
+        uri = "file:///C:/tmp/a.py"
+        seq = [
+            {"id": 1, "method": "initialize", "params": {}},
+            {"method": "textDocument/didOpen",
+             "params": {"textDocument": {"uri": uri}}},
+            {"method": "textDocument/didChange",
+             "params": {"textDocument": {"uri": uri}}},
+            {"method": "textDocument/didClose",
+             "params": {"textDocument": {"uri": uri}}},
+            {"id": 2, "method": "shutdown", "params": {}},
+        ]
+        it = iter(seq)
+        monkeypatch.setattr(lsp, "_read_message", lambda: next(it, None))
+
+        lsp.run()
+        methods = [m.get("method") or m.get("result") for m in sent]
+        assert any(m == "textDocument/publishDiagnostics"
+                   for m in methods)
+        assert sent[-1]["id"] == 2
+
+    def test_run_exits_on_none(self, monkeypatch):
+        from prism import lsp
+        monkeypatch.setattr(lsp, "_read_message", lambda: None)
+        monkeypatch.setattr(lsp, "_send_message", lambda m: None)
+        assert lsp.run() is None
+
+
+class TestAIPipeline:
+    def test_chunk_content_single(self):
+        from prism.ai_pipeline import chunk_content
+        assert chunk_content("a\nb\n") == [(1, "a\nb\n")]
+
+    def test_chunk_content_multi(self):
+        from prism.ai_pipeline import chunk_content
+        content = "\n".join("line%d" % i for i in range(1, 901))
+        chunks = chunk_content(content)
+        assert len(chunks) >= 3
+        assert chunks[0][0] == 1
+        last = chunks[-1]
+        assert last[0] + len(last[1].split("\n")) - 1 == 900
+
+    def test_build_skeleton_non_python(self):
+        from prism.ai_pipeline import build_skeleton
+        assert build_skeleton("a.js", "x") == ""
+
+    def test_build_skeleton_syntax_error(self):
+        from prism.ai_pipeline import build_skeleton
+        assert build_skeleton("a.py", "def (") == ""
+
+    def test_build_skeleton_extracts(self):
+        from prism.ai_pipeline import build_skeleton
+        src = ("import os\nfrom sys import path\nclass A:\n"
+               "    def m(self): pass\ndef f(): pass\n")
+        sk = build_skeleton("a.py", src)
+        assert "os" in sk and "sys" in sk
+        assert "Class A" in sk and "Function f" in sk
+
+    def test_get_tier_for_file(self):
+        from prism.ai_pipeline import get_tier_for_file, TIERS
+        assert get_tier_for_file(100) == (1.0, [])
+        assert get_tier_for_file(10 ** 9) == (TIERS[-1][1], TIERS[-1][2])
+
+    def _patch_pipeline(self, monkeypatch, call_fn):
+        import prism.ai_pipeline as ap
+        import prism.ai_graph as ag
+        monkeypatch.setattr(ap, "get_model",
+                            lambda *a, **k: (object(), "gemini", call_fn))
+        monkeypatch.setattr(ag, "build_import_graph", lambda *a, **k: {})
+        monkeypatch.setattr(ag, "get_cross_file_context", lambda *a, **k: "")
+        return ap
+
+    def test_multi_chunk_review(self, monkeypatch):
+        payload = {"findings": [{"severity": "low", "category": "c",
+                                 "message": "m", "file": "big.py", "line": 1,
+                                 "suggestion": "s"}], "summary": "ok"}
+        calls = []
+
+        def call_fn(model, sp, fp, content, agent, sk, to, ctx):
+            calls.append(1)
+            return payload
+
+        ap = self._patch_pipeline(monkeypatch, call_fn)
+        content = "\n".join("x = %d" % i for i in range(1000))
+        findings = ap.review_with_agent(
+            "S", "big.py", content, "ai_security", "", 1000)
+        assert len(calls) == len(ap.chunk_content(content))
+        assert len(findings) >= 1
+
+    def test_whole_file_fast_summarizes(self, monkeypatch):
+        payload = {"findings": [], "summary": "ok"}
+        calls = {"n": 0}
+
+        def call_fn(model, sp, fp, content, agent, sk, to, ctx):
+            calls["n"] += 1
+            return payload
+
+        ap = self._patch_pipeline(monkeypatch, call_fn)
+        content = "\n".join("x = %d" % i for i in range(10500))
+        findings = ap.review_with_agent(
+            "S", "big.py", content, "ai_security", "", 10500, fast=True)
+        assert calls["n"] > 1
+        assert findings == []
+
+    def test_chunk_failure_blocks(self, monkeypatch):
+        def call_fn(model, sp, fp, content, agent, sk, to, ctx):
+            return {"findings": [], "summary": "boom", "_failed": True,
+                    "_error": "boom", "_error_kind": "transport"}
+
+        ap = self._patch_pipeline(monkeypatch, call_fn)
+        content = "\n".join("x = %d" % i for i in range(1000))
+        findings = ap.review_with_agent(
+            "S", "big.py", content, "ai_security", "", 1000)
+        assert len(findings) == 1
+        assert findings[0].category == "AI Error"
+        assert findings[0].severity.value == "high"
+
+    def test_single_chunk_failure_blocks(self, monkeypatch):
+        def call_fn(model, sp, fp, content, agent, sk, to, ctx):
+            return {"findings": [], "summary": "boom", "_failed": True,
+                    "_error": "boom", "_error_kind": "transport"}
+
+        ap = self._patch_pipeline(monkeypatch, call_fn)
+        findings = ap.review_with_agent(
+            "S", "a.py", "x = 1\n", "ai_security", "", 1)
+        assert len(findings) == 1
+        assert findings[0].severity.value == "high"
+
+    def test_safe_generate_returns_text(self):
+        from prism.ai_pipeline import _safe_generate
+        assert _safe_generate(object(), "p", 1,
+                              lambda *a: {"summary": " hi "}) == "hi"
+        assert _safe_generate(object(), "p", 1, lambda *a: "yo") == "yo"
+
+    def test_safe_generate_returns_empty_after_failures(self, monkeypatch):
+        import prism.ai_pipeline as ap
+
+        def boom(*a, **k):
+            raise RuntimeError("nope")
+
+        monkeypatch.setattr(ap.time, "sleep", lambda s: None)
+        assert ap._safe_generate(object(), "p", 1, boom) == ""
+
+    def test_summarize_chunks_skips_failure(self, monkeypatch):
+        import prism.ai_pipeline as ap
+
+        def boom(*a, **k):
+            raise RuntimeError("nope")
+
+        monkeypatch.setattr(ap, "_safe_generate", boom)
+        out = ap._summarize_chunks(
+            object(), [(1, "a\nb")], "f.py", "sk", 1, lambda *a: "", "gemini")
+        assert "summary failed" in out
+
+    def test_summarize_chunks_empty_when_safe_generate_fails(self, monkeypatch):
+        import prism.ai_pipeline as ap
+        monkeypatch.setattr(ap.time, "sleep", lambda s: None)
+
+        def call_fn(model, sp, fp, content, agent, sk, to, ctx):
+            raise RuntimeError("nope")
+
+        out = ap._summarize_chunks(
+            object(), [(1, "a\nb")], "f.py", "sk", 1, call_fn, "gemini")
+        assert out == "Chunk 1: "
+
+
+class TestCLIParser:
+    def test_check_defaults(self):
+        from prism.cli import build_parser
+        args = build_parser().parse_args(["check", "app.py"])
+        assert args.command == "check"
+        assert args.file == "app.py"
+        assert args.effort == "balanced"
+
+    def test_global_effort(self):
+        from prism.cli import build_parser
+        args = build_parser().parse_args(["--effort", "lite", "version"])
+        assert args.effort == "lite"
+
+    def test_check_staged_flags(self):
+        from prism.cli import build_parser
+        args = build_parser().parse_args(
+            ["check-staged", "--json", "--prompt", "--fast", "--test"])
+        assert args.json and args.prompt and args.fast and args.test
+
+    def test_check_fix_flags(self):
+        from prism.cli import build_parser
+        args = build_parser().parse_args(
+            ["check", "app.py", "--fix", "--yes", "--no-dashboard"])
+        assert args.fix and args.yes and args.no_dashboard
+
+    def test_check_diff_alias(self):
+        from prism.cli import build_parser
+        args = build_parser().parse_args(["diff", "--base", "origin/main"])
+        assert args.command == "diff"
+        assert args.base == "origin/main"
+
+    def test_key_delete_provider(self):
+        from prism.cli import build_parser
+        args = build_parser().parse_args(
+            ["key", "delete", "--provider", "claude"])
+        assert args.action == "delete"
+        assert args.provider == "claude"
+
+    def test_mode_default_none(self):
+        from prism.cli import build_parser
+        args = build_parser().parse_args(["mode"])
+        assert args.mode is None
+
+    def test_ignore_default(self):
+        from prism.cli import build_parser
+        args = build_parser().parse_args(["ignore"])
+        assert args.action == "list"
+        assert args.patterns == []
+
+    def test_agent_enable_disable(self):
+        from prism.cli import build_parser
+        args = build_parser().parse_args(
+            ["agents", "--disable", "quality", "test"])
+        assert args.disable == ["quality", "test"]
+
+    def test_main_dispatch(self, monkeypatch):
+        import prism.cli as cli
+        called = {}
+
+        def fake(args):
+            called["cmd"] = args.command
+
+        monkeypatch.setattr(cli, "_COMMANDS", {**cli._COMMANDS, "version": fake})
+        monkeypatch.setattr(sys, "argv", ["prism", "version"])
+        cli.main()
+        assert called["cmd"] == "version"
+
+    def test_main_no_command_prints_help(self, monkeypatch, capsys):
+        import prism.cli as cli
+        monkeypatch.setattr(sys, "argv", ["prism"])
+        cli.main()
+        assert "usage" in capsys.readouterr().out.lower()
+
+
+class TestCommandsCommon:
+    def test_agent_table_list(self):
+        from prism.commands_common import _agent_table
+        assert _agent_table(["a", "b"]) == {"a": True, "b": True}
+
+    def test_agent_table_dict_passthrough(self):
+        from prism.commands_common import _agent_table
+        d = {"a": False}
+        assert _agent_table(d) is d
+
+    def test_set_agent_enabled_dict(self):
+        from prism.commands_common import _set_agent_enabled
+        d = {"a": True}
+        assert _set_agent_enabled(d, "a", True) is False
+        assert _set_agent_enabled(d, "a", False) is True
+        assert d["a"] is False
+
+    def test_set_agent_enabled_list(self):
+        from prism.commands_common import _set_agent_enabled
+        lst = ["a"]
+        assert _set_agent_enabled(lst, "a", True) is False
+        assert _set_agent_enabled(lst, "b", True) is True
+        assert _set_agent_enabled(lst, "a", False) is True
+        assert lst == ["b"]
+        assert _set_agent_enabled(lst, "zzz", False) is False
+
+    def test_empty_staged_output(self):
+        from prism.commands_common import _empty_staged_output
+        out = _empty_staged_output(["a.py"])
+        assert out["files_reviewed"] == ["a.py"]
+        assert out["commit_allowed"] is True
+        assert "skipped_ignored" not in out
+        out2 = _empty_staged_output(["a.py"], skipped=["x"])
+        assert out2["skipped_ignored"] == ["x"]
+
+    def test_findings_to_agent_results_groups(self):
+        from prism.commands_common import _findings_to_agent_results
+        cached = [
+            {"agent": "policy", "severity": "high", "category": "c",
+             "problem": "p", "file": "a.py", "line": 1, "rule_id": "P-1"},
+            {"agent": "policy", "severity": "low", "category": "c",
+             "problem": "p2", "file": "a.py", "line": 2, "rule_id": "P-2"},
+            {"agent": "quality", "severity": "weird", "category": "c",
+             "problem": "p3", "file": "a.py", "line": 3, "rule_id": "Q-1"},
+        ]
+        results = _findings_to_agent_results(cached)
+        by_name = {r.agent_name: r for r in results}
+        assert set(by_name) == {"policy", "quality"}
+        assert by_name["policy"].passed is False
+        assert len(by_name["policy"].findings) == 2
+        assert by_name["quality"].findings[0].severity.value == "low"
+
+    def test_cached_risk_score(self, tmp_path):
+        import prism.commands_common as cc
+        p = tmp_path / "a.py"
+        p.write_text("x = 1\n")
+        score = cc._cached_risk_score(str(p), [
+            {"agent": "x", "severity": "high", "category": "c",
+             "problem": "p", "file": str(p), "line": 1, "rule_id": "X-1"}])
+        assert isinstance(score, float)
+
+    def test_suggested_code_for_uses_existing(self):
+        from prism.commands_common import _suggested_code_for
+        from prism.agents import Finding, Severity
+        f = Finding(agent="x", severity=Severity.LOW, category="c",
+                    message="m", file="a.py", line=1,
+                    suggested_code="fixed = 1")
+        assert _suggested_code_for(f, "x") == "fixed = 1"
+
+    def test_finding_to_dict(self):
+        from prism.commands_common import _finding_to_dict
+        from prism.agents import Finding, Severity
+        f = Finding(agent="x", severity=Severity.MEDIUM, category="c",
+                    message="m", file="a.py", line=2, rule_id="X-1",
+                    suggested_code="fix")
+        d = _finding_to_dict(f)
+        assert d["severity"] == "medium"
+        assert d["problem"] == "m"
+        assert d["suggested_code"] == "fix"
+
+    def test_json_output_staged_filters(self, monkeypatch):
+        import prism.commands_common as cc
+        from prism.agents import AgentResult, Finding, Severity, Blocker
+        monkeypatch.setattr(cc, "load_deviation_policy", lambda: {})
+        monkeypatch.setattr(cc, "should_suppress", lambda rid: False)
+        high = Finding(agent="x", severity=Severity.HIGH, category="c",
+                       message="m", file="a.py", line=1, rule_id="X-1",
+                       confidence=0.9, blocker=Blocker.BLOCKS)
+        low = Finding(agent="x", severity=Severity.LOW, category="c",
+                      message="m2", file="a.py", line=2, rule_id="X-2",
+                      confidence=0.1)
+        out = cc._json_output_staged(
+            [AgentResult("x", [high, low])], {}, {"a.py": 1.0},
+            ["a.py"], [], 1)
+        assert out["total_findings"] == 1
+        assert out["blocking"] == 1
+        assert out["commit_allowed"] is False
+        assert out["findings"][0]["blocking"] is True
+
+    def test_apply_fixes_no_change(self, tmp_path):
+        import prism.commands_common as cc
+        p = tmp_path / "a.py"
+        p.write_text("x = 1\n")
+        assert cc._apply_fixes_with_preview(p, "x = 1\n", []) is False
+
+    def test_apply_fixes_non_interactive(self, tmp_path, monkeypatch):
+        import prism.commands_common as cc
+        p = tmp_path / "a.py"
+        p.write_text("x = 1\n")
+        monkeypatch.setattr(cc, "apply_fixes", lambda fixes, c: "x = 2\n")
+        monkeypatch.setattr(
+            sys, "stdin", type("S", (), {"isatty": lambda s: False})())
+        assert cc._apply_fixes_with_preview(
+            p, "x = 1\n", [object()]) is False
+        assert p.read_text() == "x = 1\n"
+
+    def test_apply_fixes_assume_yes(self, tmp_path, monkeypatch):
+        import prism.commands_common as cc
+        p = tmp_path / "a.py"
+        p.write_text("x = 1\n")
+        monkeypatch.setattr(cc, "apply_fixes", lambda fixes, c: "x = 2\n")
+        assert cc._apply_fixes_with_preview(
+            p, "x = 1\n", [object()], assume_yes=True, json_mode=True) is True
+        assert p.read_text() == "x = 2\n"
+        assert (tmp_path / "a.py.prism-bak").read_text() == "x = 1\n"
+
+    def test_review_one(self, tmp_path, monkeypatch):
+        import prism.commands_common as cc
+        from prism.agents import AgentResult, Finding, Severity
+        p = tmp_path / "a.py"
+        p.write_text("x = 1\n")
+        f = Finding(agent="x", severity=Severity.LOW, category="c",
+                    message="m", file=str(p), line=1, rule_id="X-1")
+        monkeypatch.setattr(
+            cc, "review_file",
+            lambda *a, **k: ([AgentResult("x", [f])], 0.5))
+        results, score, file_findings = cc._review_one(
+            str(p), {}, "lite", False, "")
+        assert score == 0.5
+        assert len(file_findings) == 1
+        assert file_findings[0]["problem"] == "m"
+
+    def test_finalize_review_json_exit(self, monkeypatch):
+        import prism.commands_common as cc
+        monkeypatch.setattr(cc, "format_report", lambda *a, **k: ("txt", 0))
+        monkeypatch.setattr(cc, "quality_gates_met", lambda *a, **k: True)
+        monkeypatch.setattr(cc, "_git_commit_info", lambda: ("h", "b"))
+        monkeypatch.setattr(cc, "save_report", lambda **k: "rid")
+        monkeypatch.setattr(cc, "record_commit", lambda *a, **k: None)
+        monkeypatch.setattr(cc, "load_deviation_policy", lambda: {})
+        monkeypatch.setattr(cc, "should_suppress", lambda rid: False)
+        with pytest.raises(SystemExit) as ei:
+            cc._finalize_review([], [], {}, ["a.py"], {}, True)
+        assert ei.value.code == 0
+
+
+class TestCommandsSetup:
+    def test_init_creates_config(self, tmp_path, monkeypatch, capsys):
+        import prism.commands_setup as cs
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env.example").write_text('GEMINI_API_KEY=""\n')
+        cs._cmd_init(argparse.Namespace())
+        cfg = json.loads((tmp_path / "prism.json").read_text())
+        assert cfg["quality"]["docstrings"] is False
+        assert cfg["policy"]["headers"] is False
+        assert (tmp_path / ".env").exists()
+        assert (tmp_path / ".prismignore").exists()
+
+    def test_init_does_not_overwrite(self, tmp_path, monkeypatch, capsys):
+        import prism.commands_setup as cs
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "prism.json").write_text('{"custom": true}')
+        cs._cmd_init(argparse.Namespace())
+        assert json.loads(
+            (tmp_path / "prism.json").read_text()) == {"custom": True}
+        assert "already exists" in capsys.readouterr().out
+
+    def test_install_hook(self, tmp_path, monkeypatch, capsys):
+        import prism.commands_setup as cs
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        cs._cmd_install_hook(argparse.Namespace())
+        hook = tmp_path / ".git" / "hooks" / "pre-commit"
+        assert hook.exists()
+        assert "PRISM" in hook.read_text()
+
+    def test_install_hook_requires_git(self, tmp_path, monkeypatch):
+        import prism.commands_setup as cs
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SystemExit):
+            cs._cmd_install_hook(argparse.Namespace())
+
+    def test_uninstall_hook(self, tmp_path, monkeypatch, capsys):
+        import prism.commands_setup as cs
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git" / "hooks").mkdir(parents=True)
+        hook = tmp_path / ".git" / "hooks" / "pre-commit"
+        hook.write_text("x")
+        cs._cmd_uninstall_hook(argparse.Namespace())
+        assert not hook.exists()
+        capsys.readouterr()
+        cs._cmd_uninstall_hook(argparse.Namespace())
+        assert "No pre-commit hook" in capsys.readouterr().out
+
+    def test_agents_toggle(self, tmp_path, monkeypatch, capsys):
+        import prism.commands_setup as cs
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "prism.json").write_text(
+            json.dumps({"agents": ["security"]}))
+        cs._cmd_agents(argparse.Namespace(enable=["quality"], disable=[]))
+        cfg = json.loads((tmp_path / "prism.json").read_text())
+        assert "quality" in cfg["agents"]
+        cs._cmd_agents(argparse.Namespace(enable=[], disable=["security"]))
+        cfg = json.loads((tmp_path / "prism.json").read_text())
+        assert "security" not in cfg["agents"]
+        out = capsys.readouterr().out
+        assert "Enabled agent: quality" in out
+        assert "Disabled agent: security" in out
+
+    def test_agents_unknown(self, tmp_path, monkeypatch, capsys):
+        import prism.commands_setup as cs
+        monkeypatch.chdir(tmp_path)
+        cs._cmd_agents(argparse.Namespace(enable=[], disable=["nope"]))
+        assert "Agent not found: nope" in capsys.readouterr().out
+
+    def test_mode_show(self, tmp_path, monkeypatch, capsys):
+        import prism.commands_setup as cs
+        monkeypatch.chdir(tmp_path)
+        cs._cmd_mode(argparse.Namespace(mode=None))
+        assert "Mode:" in capsys.readouterr().out
+
+    def test_mode_set(self, tmp_path, monkeypatch, capsys):
+        import prism.commands_setup as cs
+        monkeypatch.chdir(tmp_path)
+        cs._cmd_mode(argparse.Namespace(mode="regex"))
+        assert "No API calls" in capsys.readouterr().out
+
+    def test_mode_invalid(self, tmp_path, monkeypatch):
+        import prism.commands_setup as cs
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SystemExit):
+            cs._cmd_mode(argparse.Namespace(mode="bogus"))
+
+    def test_ignore_add_remove_reset(self, tmp_path, monkeypatch, capsys):
+        import prism.commands_setup as cs
+        monkeypatch.chdir(tmp_path)
+        cs._cmd_ignore(argparse.Namespace(action="add", patterns=["docs/"]))
+        assert "Added" in capsys.readouterr().out
+        cs._cmd_ignore(argparse.Namespace(action="remove", patterns=["docs/"]))
+        assert "Removed" in capsys.readouterr().out
+        cs._cmd_ignore(argparse.Namespace(action="reset"))
+        assert "default ignore list" in capsys.readouterr().out
+
+    def test_ignore_add_requires_pattern(self, tmp_path, monkeypatch):
+        import prism.commands_setup as cs
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SystemExit):
+            cs._cmd_ignore(argparse.Namespace(action="add", patterns=[]))
+
+    def test_version_and_help(self, capsys):
+        import prism.commands_setup as cs
+        cs._cmd_version(argparse.Namespace())
+        assert "PRISM v" in capsys.readouterr().out
+        cs._cmd_help(argparse.Namespace())
+        assert "PRISM" in capsys.readouterr().out
+
+
+class TestCliCommands:
+    def _base_args(self, **kw):
+        ns = argparse.Namespace(
+            json=False, prompt=False, effort="lite", fast=False,
+            test=False, dashboard=False, no_dashboard=True)
+        for k, v in kw.items():
+            setattr(ns, k, v)
+        return ns
+
+    def test_check_staged_no_files(self, tmp_path, monkeypatch, capsys):
+        import prism.cli_commands as cc
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(cc, "load_config", lambda *a, **k: {})
+        monkeypatch.setattr(cc, "get_staged_files", lambda **k: [])
+        monkeypatch.setattr(cc, "filter_files", lambda staged: ([], []))
+        with pytest.raises(SystemExit) as ei:
+            cc._cmd_check_staged(self._base_args())
+        assert ei.value.code == 0
+        assert "No staged files" in capsys.readouterr().out
+
+    def test_check_staged_json_no_files(self, tmp_path, monkeypatch, capsys):
+        import prism.cli_commands as cc
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(cc, "load_config", lambda *a, **k: {})
+        monkeypatch.setattr(cc, "get_staged_files", lambda **k: [])
+        monkeypatch.setattr(cc, "filter_files", lambda staged: ([], []))
+        with pytest.raises(SystemExit) as ei:
+            cc._cmd_check_staged(self._base_args(json=True))
+        assert ei.value.code == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["commit_allowed"] is True
+
+    def test_check_staged_reviews_and_finalizes(self, tmp_path, monkeypatch):
+        import prism.cli_commands as cc
+        from prism.agents import AgentResult
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(cc, "load_config", lambda *a, **k: {})
+        monkeypatch.setattr(cc, "get_staged_files", lambda **k: ["a.py"])
+        monkeypatch.setattr(cc, "filter_files", lambda staged: (staged, []))
+        monkeypatch.setattr(cc, "get_changed_files",
+                            lambda *a, **k: ([], [], {}))
+        monkeypatch.setattr(cc, "get_cached_findings", lambda f, c: None)
+        monkeypatch.setattr(cc, "get_file_diff", lambda f: "")
+        monkeypatch.setattr(cc, "cache_findings", lambda *a, **k: None)
+        monkeypatch.setattr(
+            cc, "_review_one",
+            lambda *a, **k: ([AgentResult("x", [])], 0.0, []))
+        captured = {}
+
+        def fake_finalize(all_results, all_findings_list, risk_scores, files,
+                          config, json_mode, test_results=None, args=None):
+            captured["files"] = files
+            captured["results"] = all_results
+            captured["scores"] = risk_scores
+
+        monkeypatch.setattr(cc, "_finalize_review", fake_finalize)
+        cc._cmd_check_staged(self._base_args())
+        assert captured["files"] == ["a.py"]
+        assert captured["scores"] == {"a.py": 0.0}
+
+    def test_check_staged_uses_cache(self, tmp_path, monkeypatch):
+        import prism.cli_commands as cc
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(cc, "load_config", lambda *a, **k: {})
+        monkeypatch.setattr(cc, "get_staged_files", lambda **k: ["a.py"])
+        monkeypatch.setattr(cc, "filter_files", lambda staged: (staged, []))
+        monkeypatch.setattr(cc, "get_changed_files",
+                            lambda *a, **k: ([], ["a.py"], {}))
+        cached = [{"agent": "x", "severity": "low", "category": "c",
+                   "problem": "p", "file": "a.py", "line": 1, "rule_id": "X-1"}]
+        monkeypatch.setattr(cc, "get_cached_findings", lambda f, c: cached)
+        reviewed = {"n": 0}
+
+        def boom(*a, **k):
+            reviewed["n"] += 1
+            raise AssertionError("should not review cached file")
+
+        monkeypatch.setattr(cc, "_review_one", boom)
+        captured = {}
+        monkeypatch.setattr(
+            cc, "_finalize_review",
+            lambda *a, **k: captured.update(files=a[3]))
+        cc._cmd_check_staged(self._base_args())
+        assert reviewed["n"] == 0
+        assert captured["files"] == ["a.py"]
+
+    def test_check_diff_no_base_ref(self, tmp_path, monkeypatch, capsys):
+        import prism.cli_commands as cc
+
+        class _Proc:
+            returncode = 1
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(cc.subprocess, "run", lambda *a, **k: _Proc())
+        with pytest.raises(SystemExit) as ei:
+            cc._cmd_check_diff(self._base_args())
+        assert ei.value.code == 2
+        assert "Cannot resolve base ref" in capsys.readouterr().err
+
+    def test_check_diff_no_files(self, tmp_path, monkeypatch, capsys):
+        import prism.cli_commands as cc
+
+        class _Proc:
+            returncode = 0
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(cc.subprocess, "run", lambda *a, **k: _Proc())
+        monkeypatch.setattr(cc, "get_diff_files", lambda base: [])
+        with pytest.raises(SystemExit) as ei:
+            cc._cmd_check_diff(self._base_args())
+        assert ei.value.code == 0
+        assert "No changed files" in capsys.readouterr().out
+
+    def test_check_diff_reviews(self, tmp_path, monkeypatch):
+        import prism.cli_commands as cc
+        from prism.agents import AgentResult
+
+        class _Proc:
+            returncode = 0
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "a.py").write_text("x = 1\n")
+        monkeypatch.setattr(cc.subprocess, "run", lambda *a, **k: _Proc())
+        monkeypatch.setattr(cc, "get_diff_files", lambda base: ["a.py"])
+        monkeypatch.setattr(cc, "get_diff_for_file", lambda base, f: "diff")
+        monkeypatch.setattr(cc, "load_config", lambda *a, **k: {})
+        monkeypatch.setattr(
+            cc, "_review_one",
+            lambda *a, **k: ([AgentResult("x", [])], 0.0, []))
+        captured = {}
+        monkeypatch.setattr(
+            cc, "_finalize_review",
+            lambda *a, **k: captured.update(files=a[3], scores=a[2]))
+        cc._cmd_check_diff(self._base_args())
+        assert captured["files"] == ["a.py"]
+        assert captured["scores"] == {"a.py": 0.0}
+
+    def test_run_self_tests_quick(self, tmp_path, monkeypatch, capsys):
+        import prism.cli_commands as cc
+        monkeypatch.chdir(tmp_path)
+        cc._run_self_tests(argparse.Namespace(quick=True))
+        out = capsys.readouterr().out
+        assert "PRISM Self-Tests" in out
+        assert "Results:" in out
+
+    def test_run_benchmark_requires_file(self, capsys):
+        import prism.cli_commands as cc
+        cc._run_benchmark(argparse.Namespace(file=None, iterations=1))
+        assert "Please specify a file" in capsys.readouterr().out
+
+    def test_run_benchmark_missing_file(self, tmp_path, capsys):
+        import prism.cli_commands as cc
+        cc._run_benchmark(argparse.Namespace(
+            file=str(tmp_path / "nope.py"), iterations=1))
+        assert "File not found" in capsys.readouterr().out
+
+    def test_run_benchmark_runs(self, tmp_path, monkeypatch, capsys):
+        import prism.cli_commands as cc
+        p = tmp_path / "a.py"
+        p.write_text("x = 1\n")
+        cc._run_benchmark(argparse.Namespace(file=str(p), iterations=1))
+        out = capsys.readouterr().out
+        assert "PRISM Benchmark" in out
+        assert "average" in out
+
+    def test_restage_true(self, monkeypatch):
+        import prism.cli_commands as cc
+
+        class _Proc:
+            returncode = 0
+
+        monkeypatch.setattr(cc.subprocess, "run", lambda *a, **k: _Proc())
+        assert cc._restage(["a.py"]) is True
+
+    def test_restage_failure(self, monkeypatch):
+        import prism.cli_commands as cc
+
+        def boom(*a, **k):
+            raise RuntimeError("no git")
+
+        monkeypatch.setattr(cc.subprocess, "run", boom)
+        assert cc._restage(["a.py"]) is False
+
+    def test_key_set(self, tmp_path, monkeypatch, capsys):
+        import prism.commands_setup as cs
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text("MODEL_PROVIDER=gemini\n")
+        cs._cmd_key(argparse.Namespace(
+            action="set", provider="openai", key="sk-real-key-1234567890"))
+        env = (tmp_path / ".env").read_text()
+        assert 'OPENAI_API_KEY="sk-real-key-1234567890"' in env
+        assert "MODEL_PROVIDER=openai" in env
+        assert "Set openai API key" in capsys.readouterr().out
+
+    def test_key_set_replaces_other_provider(self, tmp_path, monkeypatch, capsys):
+        import prism.commands_setup as cs
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text(
+            'GEMINI_API_KEY="g"\nMODEL_PROVIDER=gemini\n')
+        cs._cmd_key(argparse.Namespace(
+            action="set", provider="claude", key="sk-ant-real-key-12345"))
+        env = (tmp_path / ".env").read_text()
+        assert "GEMINI_API_KEY" not in env
+        assert 'ANTHROPIC_API_KEY="sk-ant-real-key-12345"' in env
+
+    def test_key_set_placeholder_rejected(self, tmp_path, monkeypatch):
+        import prism.commands_setup as cs
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text("")
+        with pytest.raises(SystemExit):
+            cs._cmd_key(argparse.Namespace(
+                action="set", provider="gemini", key="your-key-here"))
+
+    def test_key_set_invalid_provider(self, tmp_path, monkeypatch, capsys):
+        import prism.commands_setup as cs
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text("")
+        cs._cmd_key(argparse.Namespace(
+            action="set", provider="bogus", key="sk-real-key-1234567890"))
+        assert "Invalid provider" in capsys.readouterr().out
+
+    def test_key_set_no_key(self, tmp_path, monkeypatch, capsys):
+        import prism.commands_setup as cs
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text("")
+        cs._cmd_key(argparse.Namespace(
+            action="set", provider="gemini", key=None))
+        assert "No key provided" in capsys.readouterr().out
+
+    def test_key_status(self, tmp_path, monkeypatch, capsys):
+        import prism.commands_setup as cs
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text(
+            'GEMINI_API_KEY="sk-real-key-1234567890"\nMODEL_PROVIDER=gemini\n')
+        cs._cmd_key(argparse.Namespace(
+            action="status", provider=None, key=None))
+        out = capsys.readouterr().out
+        assert "gemini: sk-r...7890" in out
+        assert "Active provider: gemini" in out
+
+    def test_key_status_none(self, tmp_path, monkeypatch, capsys):
+        import prism.commands_setup as cs
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text("MODEL_PROVIDER=gemini\n")
+        cs._cmd_key(argparse.Namespace(
+            action="status", provider=None, key=None))
+        assert "No API keys configured" in capsys.readouterr().out
+
+    def test_key_status_no_env(self, tmp_path, monkeypatch, capsys):
+        import prism.commands_setup as cs
+        monkeypatch.chdir(tmp_path)
+        cs._cmd_key(argparse.Namespace(
+            action="status", provider=None, key=None))
+        assert "No .env file found" in capsys.readouterr().out

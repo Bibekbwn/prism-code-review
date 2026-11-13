@@ -15,6 +15,8 @@ import logging
 import importlib
 import concurrent.futures
 
+from prism import token_usage
+
 # Per-attempt wall-clock cap. A provider that accepts the socket but never
 # answers (or an HTTP client that ignores its timeout) must not stall the CLI
 # for minutes: every attempt is abandoned after this many seconds.
@@ -38,6 +40,66 @@ _logger = logging.getLogger(__name__)
 _no_key_warned = False
 _circuit_failures = 0
 _circuit_open_until = 0.0
+
+# Provider catalogue. `kind` selects the client shape; `key`/`model` are the
+# env vars that hold the API key and model override. `base_url` (+ optional
+# `base_url_default`) targets an OpenAI-compatible endpoint, which is how the
+# free tiers (OpenRouter, Groq) and paid alternatives (Together, DeepSeek,
+# Mistral) are supported without new client code.
+PROVIDERS = {
+    "gemini": {
+        "kind": "gemini", "key": "GEMINI_API_KEY",
+        "model": "GEMINI_MODEL", "default_model": "gemini-3.5-flash-lite",
+    },
+    "claude": {
+        "kind": "claude", "key": "ANTHROPIC_API_KEY",
+        "model": "CLAUDE_MODEL", "default_model": "claude-3-5-sonnet-20241022",
+    },
+    "openai": {
+        "kind": "openai", "key": "OPENAI_API_KEY",
+        "model": "OPENAI_MODEL", "default_model": "gpt-4o",
+        "base_url": "OPENAI_BASE_URL",
+    },
+    "openrouter": {
+        "kind": "openai", "key": "OPENROUTER_API_KEY",
+        "model": "OPENROUTER_MODEL", "default_model": "openai/gpt-4o-mini",
+        "base_url": "OPENROUTER_BASE_URL",
+        "base_url_default": "https://openrouter.ai/api/v1",
+    },
+    "groq": {
+        "kind": "openai", "key": "GROQ_API_KEY",
+        "model": "GROQ_MODEL", "default_model": "llama-3.3-70b-versatile",
+        "base_url": "GROQ_BASE_URL",
+        "base_url_default": "https://api.groq.com/openai/v1",
+    },
+    "together": {
+        "kind": "openai", "key": "TOGETHER_API_KEY",
+        "model": "TOGETHER_MODEL",
+        "default_model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        "base_url": "TOGETHER_BASE_URL",
+        "base_url_default": "https://api.together.xyz/v1",
+    },
+    "deepseek": {
+        "kind": "openai", "key": "DEEPSEEK_API_KEY",
+        "model": "DEEPSEEK_MODEL", "default_model": "deepseek-chat",
+        "base_url": "DEEPSEEK_BASE_URL",
+        "base_url_default": "https://api.deepseek.com",
+    },
+    "mistral": {
+        "kind": "openai", "key": "MISTRAL_API_KEY",
+        "model": "MISTRAL_MODEL", "default_model": "mistral-large-latest",
+        "base_url": "MISTRAL_BASE_URL",
+        "base_url_default": "https://api.mistral.ai/v1",
+    },
+}
+
+PROVIDER_ALIASES = {
+    "anthropic": "claude", "google": "gemini",
+    "gpt": "openai", "open-ai": "openai",
+}
+
+# Which provider/model the current call belongs to, for token accounting.
+_ACTIVE_MODEL = {"provider": "gemini", "model": "gemini-3.5-flash-lite"}
 
 
 def _warn_no_key(provider, env_var):
@@ -70,52 +132,74 @@ def _is_placeholder_key(key):
     ))
 
 
+def _resolve_provider(provider):
+    """Normalize a provider name (aliases included) or read MODEL_PROVIDER."""
+    provider = (provider or os.getenv("MODEL_PROVIDER", "gemini")).lower()
+    return PROVIDER_ALIASES.get(provider, provider)
+
+
+def _record_usage(input_tokens, output_tokens, prompt_text, response_text):
+    """Record one call's tokens, estimating when the provider gave none."""
+    provider = _ACTIVE_MODEL["provider"]
+    model = _ACTIVE_MODEL["model"]
+    if input_tokens or output_tokens:
+        token_usage.record(provider, model, input_tokens, output_tokens)
+    else:
+        token_usage.record(
+            provider, model,
+            token_usage.estimate_tokens(prompt_text),
+            token_usage.estimate_tokens(response_text),
+            estimated=True,
+        )
+
+
 def get_model(provider=None, model_name=None):
     """Lazy-load an LLM client. Returns (client, provider, call_fn) or (None, None, None)."""
-    provider = (provider or os.getenv("MODEL_PROVIDER", "gemini")).lower()
+    provider = _resolve_provider(provider)
+    spec = PROVIDERS.get(provider)
+    if spec is None:
+        _logger.error("Unknown MODEL_PROVIDER: %s", provider)
+        return None, None, None
 
-    if provider == "gemini":
-        model_name = model_name or os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key or _is_placeholder_key(api_key):
-            _warn_no_key(provider, "GEMINI_API_KEY")
-            return None, None, None
+    model_name = model_name or os.getenv(spec["model"]) or spec["default_model"]
+    api_key = os.getenv(spec["key"])
+    if not api_key or _is_placeholder_key(api_key):
+        _warn_no_key(provider, spec["key"])
+        return None, None, None
+
+    _ACTIVE_MODEL["provider"] = provider
+    _ACTIVE_MODEL["model"] = model_name
+    kind = spec["kind"]
+
+    if kind == "gemini":
         try:
             import google.generativeai as genai
             genai.configure(api_key=api_key)
-            return genai.GenerativeModel(model_name), "gemini", _call_fn
+            return genai.GenerativeModel(model_name), provider, _call_fn
         except Exception as exc:
             _logger.error("Failed to initialize Gemini: %s", exc)
             return None, None, None
 
-    if provider == "claude":
-        model_name = model_name or os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022")
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key or _is_placeholder_key(api_key):
-            _warn_no_key(provider, "ANTHROPIC_API_KEY")
-            return None, None, None
+    if kind == "claude":
         try:
             anthropic = __import__("anthropic")
-            return anthropic.Anthropic(api_key=api_key), "claude", _call_claude
+            return anthropic.Anthropic(api_key=api_key), provider, _call_claude
         except Exception as exc:
             _logger.error("Failed to initialize Claude: %s", exc)
             return None, None, None
 
-    if provider == "openai":
-        model_name = model_name or os.getenv("OPENAI_MODEL", "gpt-4o")
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key or _is_placeholder_key(api_key):
-            _warn_no_key(provider, "OPENAI_API_KEY")
-            return None, None, None
-        try:
-            openai = importlib.import_module("openai")
-            return openai.OpenAI(api_key=api_key), "openai", _call_openai
-        except Exception as exc:
-            _logger.error("Failed to initialize OpenAI: %s", exc)
-            return None, None, None
-
-    _logger.error("Unknown MODEL_PROVIDER: %s", provider)
-    return None, None, None
+    # openai / OpenAI-compatible
+    try:
+        openai = importlib.import_module("openai")
+        kwargs = {"api_key": api_key}
+        base_url = (os.getenv(spec.get("base_url", ""))
+                    or spec.get("base_url_default"))
+        if base_url:
+            kwargs["base_url"] = base_url
+        return openai.OpenAI(**kwargs), provider, _call_openai
+    except Exception as exc:
+        _logger.error("Failed to initialize %s: %s", provider, exc)
+        return None, None, None
 
 
 def _build_prompt(system_prompt, file_path, content, skeleton="", cross_file_context=""):
@@ -145,7 +229,14 @@ def _call_fn(model, system_prompt, file_path, content, agent_name,
             generation_config={"response_mime_type": "application/json"},
             request_options={"timeout": _timeout},
         )
-        return response.text or "{}"
+        text = response.text or "{}"
+        usage = getattr(response, "usage_metadata", None)
+        _record_usage(
+            getattr(usage, "prompt_token_count", 0),
+            getattr(usage, "candidates_token_count", 0),
+            prompt_text, text,
+        )
+        return text
 
     return _call_with_retry(_do_generate, prompt, agent_name, timeout)
 
@@ -159,12 +250,19 @@ def _call_claude(model, system_prompt, file_path, content, agent_name,
 
     def _do_call():
         response = model.messages.create(
-            model=os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022"),
+            model=_ACTIVE_MODEL["model"],
             max_tokens=4096,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
         )
-        return response.content[0].text
+        text = response.content[0].text
+        usage = getattr(response, "usage", None)
+        _record_usage(
+            getattr(usage, "input_tokens", 0),
+            getattr(usage, "output_tokens", 0),
+            user_prompt, text,
+        )
+        return text
 
     return _call_with_retry(_do_call, None, agent_name, timeout)
 
@@ -178,14 +276,21 @@ def _call_openai(model, system_prompt, file_path, content, agent_name,
 
     def _do_call():
         response = model.chat.completions.create(
-            model=os.getenv("OPENAI_MODEL", "gpt-4o"),
+            model=_ACTIVE_MODEL["model"],
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
         )
-        return response.choices[0].message.content
+        text = response.choices[0].message.content
+        usage = getattr(response, "usage", None)
+        _record_usage(
+            getattr(usage, "prompt_tokens", 0),
+            getattr(usage, "completion_tokens", 0),
+            user_prompt, text,
+        )
+        return text
 
     return _call_with_retry(_do_call, None, agent_name, timeout)
 

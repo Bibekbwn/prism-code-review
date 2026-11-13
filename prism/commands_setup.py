@@ -4,12 +4,15 @@ Extracted from cli_commands.py; behaviour unchanged.
 """
 
 import json
+import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 import prism
 from prism.agents import AGENT_REGISTRY
+from prism.ai_providers import PROVIDERS as _PROVIDERS
 from prism.cli_config import DEFAULT_AGENTS, CONFIDENCE_THRESHOLD, load_config
 from prism.commands_common import _agent_table, _save_config, _set_agent_enabled
 from prism.ignore import (
@@ -129,6 +132,10 @@ def _cmd_mode(args):
         print("Regex agents and AI agents both run (needs an API key).")
 
 
+_KEY_ENV_VARS = {name: spec["key"] for name, spec in _PROVIDERS.items()}
+_VALID_PROVIDERS = list(_PROVIDERS)
+
+
 def _cmd_key(args):
     """Manage API keys for AI providers.
 
@@ -139,121 +146,136 @@ def _cmd_key(args):
     if not env_path.exists():
         env_path = Path(".config/.env")
 
-    valid_providers = ["gemini", "openai", "claude"]
-    env_vars = {
-        "gemini": "GEMINI_API_KEY",
-        "openai": "OPENAI_API_KEY",
-        "claude": "ANTHROPIC_API_KEY",
-    }
-    all_key_vars = set(env_vars.values())
-
     if args.action == "set":
-        provider = args.provider
-        key = args.key
+        _key_set(args, env_path)
+    elif args.action == "delete":
+        _key_delete(args, env_path)
+    elif args.action == "status":
+        _key_status(env_path)
 
-        if provider not in valid_providers:
-            print("Invalid provider: {}".format(provider))
-            print("Valid providers: {}".format(", ".join(valid_providers)))
-            return
 
-        if not key:
-            print("No key provided. Usage: prism key set --provider gemini --key YOUR_KEY")
-            return
+def _key_set(args, env_path):
+    """Write one provider key and make it the only active key."""
+    provider = args.provider or "gemini"
+    key = args.key
 
-        # A placeholder written to .env makes `key status` report "No API keys
-        # configured" right after a successful `key set`, which looks like a bug.
-        if _is_placeholder_value(key):
-            print("That looks like a placeholder, not a real key.")
-            print("Usage: prism key set --provider gemini --key YOUR_REAL_KEY")
-            sys.exit(1)
+    if provider not in _VALID_PROVIDERS:
+        print("Invalid provider: {}".format(provider))
+        print("Valid providers: {}".format(", ".join(_VALID_PROVIDERS)))
+        return
 
-        env_var = env_vars[provider]
+    if not key:
+        print("No key provided. Usage: prism key set --provider gemini --key YOUR_KEY")
+        return
 
-        if env_path.exists():
-            lines = env_path.read_text().splitlines()
+    # A placeholder written to .env makes `key status` report "No API keys
+    # configured" right after a successful `key set`, which looks like a bug.
+    if _is_placeholder_value(key):
+        print("That looks like a placeholder, not a real key.")
+        print("Usage: prism key set --provider gemini --key YOUR_REAL_KEY")
+        sys.exit(1)
+
+    env_var = _KEY_ENV_VARS[provider]
+    all_key_vars = set(_KEY_ENV_VARS.values())
+
+    if env_path.exists():
+        lines = env_path.read_text().splitlines()
+    else:
+        lines = []
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+
+    key_written = False
+    provider_written = False
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        # Drop keys belonging to OTHER providers (mutual exclusivity)
+        if any(stripped.startswith(v + "=") for v in all_key_vars):
+            if stripped.startswith(env_var + "="):
+                new_lines.append(
+                    '{env_var}="{key}"'.format(env_var=env_var, key=key))
+                key_written = True
+            # else: silently drop the other provider's key
+            continue
+        if stripped.startswith("MODEL_PROVIDER="):
+            new_lines.append("MODEL_PROVIDER={}".format(provider))
+            provider_written = True
+            continue
+        new_lines.append(line)
+
+    if not key_written:
+        new_lines.append('{env_var}="{key}"'.format(env_var=env_var, key=key))
+    if not provider_written:
+        new_lines.append("MODEL_PROVIDER={}".format(provider))
+
+    env_path.write_text("\n".join(new_lines) + "\n")
+    print("Set {provider} API key in {path}".format(
+        provider=provider, path=env_path))
+    print("Environment variable: {}".format(env_var))
+    print("Active provider: {}".format(provider))
+    print("Other provider keys were removed (only one key is kept).")
+
+
+def _key_delete(args, env_path):
+    """Delete one provider's key (``--provider``) or all of them."""
+    if not env_path.exists():
+        print("No .env file found at {}".format(env_path.as_posix()))
+        return
+
+    # ``--provider`` narrows the delete to one key; without it, delete all.
+    only = args.provider
+    targets = {only: _KEY_ENV_VARS[only]} if only else _KEY_ENV_VARS
+
+    lines = env_path.read_text().splitlines()
+    new_lines = []
+    deleted = []
+    for line in lines:
+        stripped = line.strip()
+        removed = None
+        for provider, env_var in targets.items():
+            if stripped.startswith(env_var + "="):
+                removed = env_var
+                break
+        if removed:
+            deleted.append(removed)
         else:
-            lines = []
-            env_path.parent.mkdir(parents=True, exist_ok=True)
-
-        key_written = False
-        provider_written = False
-        new_lines = []
-        for line in lines:
-            stripped = line.strip()
-            # Drop keys belonging to OTHER providers (mutual exclusivity)
-            if any(stripped.startswith(v + "=") for v in all_key_vars):
-                if stripped.startswith(env_var + "="):
-                    new_lines.append('{env_var}="{key}"'.format(env_var=env_var, key=key))
-                    key_written = True
-                # else: silently drop the other provider's key
-                continue
-            if stripped.startswith("MODEL_PROVIDER="):
-                new_lines.append("MODEL_PROVIDER={}".format(provider))
-                provider_written = True
-                continue
             new_lines.append(line)
 
-        if not key_written:
-            new_lines.append('{env_var}="{key}"'.format(env_var=env_var, key=key))
-        if not provider_written:
-            new_lines.append("MODEL_PROVIDER={}".format(provider))
-
+    if deleted:
         env_path.write_text("\n".join(new_lines) + "\n")
-        print("Set {provider} API key in {path}".format(provider=provider, path=env_path))
-        print("Environment variable: {}".format(env_var))
-        print("Active provider: {}".format(provider))
-        print("Other provider keys were removed (only one key is kept).")
+        print("Deleted API key(s) from {}: {}".format(
+            env_path.as_posix(), ", ".join(deleted)))
+    elif only:
+        print("No {} key found in {}".format(only, env_path.as_posix()))
+    else:
+        print("No API keys found in {}".format(env_path.as_posix()))
 
-    elif args.action == "delete":
-        if not env_path.exists():
-            print("No .env file found at {}".format(env_path.as_posix()))
-            return
 
-        lines = env_path.read_text().splitlines()
-        new_lines = []
-        deleted = []
-        for line in lines:
-            stripped = line.strip()
-            removed = None
-            for provider, env_var in env_vars.items():
-                if stripped.startswith(env_var + "="):
-                    removed = env_var
-                    break
-            if removed:
-                deleted.append(removed)
-            else:
-                new_lines.append(line)
+def _key_status(env_path):
+    """Print the configured provider keys (masked) and the active provider."""
+    if not env_path.exists():
+        print("No .env file found at {}".format(env_path.as_posix()))
+        print("Run: prism key set --provider gemini --key YOUR_KEY")
+        return
 
-        if deleted:
-            env_path.write_text("\n".join(new_lines) + "\n")
-            print("Deleted API key(s) from {}: {}".format(
-                env_path.as_posix(), ", ".join(deleted)))
-        else:
-            print("No API keys found in {}".format(env_path.as_posix()))
-
-    elif args.action == "status":
-        if not env_path.exists():
-            print("No .env file found at {}".format(env_path.as_posix()))
-            print("Run: prism key set --provider gemini --key YOUR_KEY")
-            return
-
-        lines = env_path.read_text().splitlines()
-        found = False
-        for line in lines:
-            stripped = line.strip()
-            for provider in valid_providers:
-                env_var = env_vars[provider]
-                if stripped.startswith(env_var + "="):
-                    value = stripped.split("=", 1)[1].strip().strip('"')
-                    if value and not _is_placeholder_value(value):
-                        masked = value[:4] + "..." + value[-4:] if len(value) > 8 else "***"
-                        print("{}: {}".format(provider, masked))
-                        found = True
-        if not found:
-            print("No API keys configured in {}".format(env_path.as_posix()))
-            print("Run: prism key set --provider gemini --key YOUR_KEY")
-        else:
-            print("\nActive provider: {}".format(_get_active_provider(lines)))
+    lines = env_path.read_text().splitlines()
+    found = False
+    for line in lines:
+        stripped = line.strip()
+        for provider in _VALID_PROVIDERS:
+            env_var = _KEY_ENV_VARS[provider]
+            if stripped.startswith(env_var + "="):
+                value = stripped.split("=", 1)[1].strip().strip('"')
+                if value and not _is_placeholder_value(value):
+                    masked = (value[:4] + "..." + value[-4:]
+                              if len(value) > 8 else "***")
+                    print("{}: {}".format(provider, masked))
+                    found = True
+    if not found:
+        print("No API keys configured in {}".format(env_path.as_posix()))
+        print("Run: prism key set --provider gemini --key YOUR_KEY")
+    else:
+        print("\nActive provider: {}".format(_get_active_provider(lines)))
 
 
 def _is_placeholder_value(value):
@@ -293,6 +315,20 @@ def _cmd_init(args):
             },
             "confidence_threshold": CONFIDENCE_THRESHOLD,
             "mode": "all",
+            "policy": {
+                "headers": False,
+                "banned_console": False,
+                "check_print": False,
+                "check_todo_refs": False,
+            },
+            "quality": {
+                "docstrings": False,
+                "type_hints": False,
+                "magic_numbers": False,
+                "line_length": False,
+                "todo_markers": False,
+                "duplication": False,
+            },
         }
         with open("prism.json", "w") as f:
             json.dump(config, f, indent=2)
@@ -360,7 +396,9 @@ def _cmd_version(args):
     print("PRISM v{}".format(prism.__version__))
     print("  Architecture: skeleton + import graph + verification + tiered chunking")
     print("  Agents: 6 AI + 4 regex = 10 total")
-    print("  Providers: gemini (default), claude, openai")
+    print("  Providers: gemini (free tier), claude, openai, openrouter (free), "
+          "groq (free), together, deepseek, mistral")
+    print("  Token accounting: on (see `prism check --json` -> token_usage)")
 
 
 def _cmd_help(args):
@@ -391,8 +429,15 @@ AGENT COMMANDS:
     prism agents --enable <name>   Enable a specific agent
     prism agents --disable <name>  Disable a specific agent
 
+REVIEW COMMANDS:
+    prism check <file>              Review a single file
+    prism check-staged              Review staged changes
+    prism check-diff                Review the diff against a base branch
+    prism scan <path>               Review every file under a path (audit)
+
 SETUP COMMANDS:
     prism init                      Create prism.json config
+    prism doctor                    Check env, providers and config
     prism install-hook              Install pre-commit git hook
     prism key set --provider gemini --key YOUR_KEY   Set API key
     prism key status                Show current API key status
@@ -444,6 +489,9 @@ EXAMPLES:
     prism check app.py
     prism check app.py --json
     prism check-staged
+    prism scan .
+    prism scan src/ --effort lite
+    prism doctor
     prism delete-report 20261108T164053Z
     prism clear-reports --force
     prism agents
@@ -499,3 +547,105 @@ def _cmd_agents(args):
     print("")
     print("Toggle one: prism agents --enable <agent> [<agent>...] "
           "| --disable <agent> [<agent>...]")
+
+
+_SDK_BY_KIND = {
+    "gemini": "google.generativeai",
+    "claude": "anthropic",
+    "openai": "openai",
+}
+
+
+def _cmd_doctor(args):
+    """Report environment readiness. Missing optional keys are warnings.
+
+    Always exits 0: the command is a diagnostic, not a gate. The regex agents
+    work with no API key at all, so "no provider configured" is information,
+    not a failure.
+    """
+    import importlib.util
+    import platform
+
+    config = load_config()
+    problems = []
+    warnings = []
+
+    print("PRISM doctor")
+    print("=" * 40)
+    print("python:    {}".format(platform.python_version()))
+    print("platform:  {}-{}".format(platform.system(), platform.machine()))
+    print("prism:     {}".format(getattr(prism, "__version__", "?")))
+
+    env_path = Path(".env")
+    if not env_path.exists():
+        env_path = Path(".config/.env")
+    if env_path.exists():
+        print("env file:  {}".format(env_path.as_posix()))
+    else:
+        print("env file:  (none found - keys must come from the shell)")
+        warnings.append("no .env file")
+
+    print("config:    {}".format(
+        "prism.json" if Path("prism.json").exists() else "(defaults)"))
+
+    effort = config.get("effort", "balanced")
+    print("effort:    {}".format(effort))
+    if effort not in ("lite", "balanced", "max"):
+        problems.append("invalid effort '{}' in prism.json".format(effort))
+
+    try:
+        subprocess.check_output(["git", "--version"],
+                                stderr=subprocess.STDOUT)
+        print("git:       ok")
+    except Exception:
+        print("git:       not found")
+        problems.append("git is not available")
+
+    agents_cfg = config.get("agents", DEFAULT_AGENTS)
+    table = _agent_table(agents_cfg)
+    enabled = [name for name, on in table.items() if on]
+    print("agents:    {} enabled ({} total)".format(len(enabled),
+                                                    len(table)))
+    if not enabled:
+        problems.append("no agents enabled in prism.json")
+
+    print("")
+    print("AI providers (optional - regex agents work without them):")
+    active_provider = os.getenv("MODEL_PROVIDER") or "gemini"
+    for name, spec in _PROVIDERS.items():
+        env_var = spec["key"]
+        has_key = bool(os.getenv(env_var))
+        module = _SDK_BY_KIND.get(spec["kind"], "")
+        have_sdk = False
+        if module:
+            try:
+                # Check the full dotted module: `google` alone is a namespace
+                # package (pulled in by protobuf), so a bare find_spec would
+                # report Gemini as installed when it is not.
+                have_sdk = importlib.util.find_spec(module) is not None
+            except (ImportError, ValueError):
+                have_sdk = False
+        mark = "[x]" if has_key else "[ ]"
+        sdk = "sdk ok" if have_sdk else "sdk MISSING"
+        print("  {} {:10} {} {:12} {}".format(
+            mark, name, env_var, sdk,
+            spec["default_model"]))
+        if name == active_provider and has_key and not have_sdk:
+            problems.append("{} is active but its SDK is not installed "
+                            "(pip install 'prism[all]')".format(name))
+
+    if not any(os.getenv(spec["key"]) for spec in _PROVIDERS.values()):
+        print("")
+        print("  no API key configured: AI agents are skipped; regex agents "
+              "still run")
+        print("  add one with: prism key set --provider gemini --key YOUR_KEY")
+
+    print("")
+    if problems:
+        print("Result: {} problem(s)".format(len(problems)))
+        for p in problems:
+            print("  [error] {}".format(p))
+    else:
+        print("Result: OK ({} warning(s))".format(len(warnings)))
+    for w in warnings:
+        print("  [warn] {}".format(w))

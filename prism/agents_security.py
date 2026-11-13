@@ -67,7 +67,7 @@ SECRET_LINE_ALLOWLIST = [
 DANGEROUS_PATTERNS = [
     (r"\beval\s*\(", "Use of eval() - code injection risk", "SECU-201"),
     (r"\bexec\s*\(", "Use of exec() - code injection risk", "SECU-202"),
-    (r"subprocess\.(call|run|Popen)\s*\([^)]*-shell\s*=\s*True", "Shell=True in subprocess - command injection risk", "SECU-203"),
+    (r"subprocess\.(call|run|Popen)\s*\([^)]*shell\s*=\s*True", "Shell=True in subprocess - command injection risk", "SECU-203"),
     (r"os\.system\s*\(", "Use of os.system() - command injection risk", "SECU-204"),
     (r"pickle\.loads?\s*\(", "Use of pickle - deserialization risk", "SECU-205"),
     (r"yaml\.load\s*\(", "Use of yaml.load() without SafeLoader - deserialization risk", "SECU-206"),
