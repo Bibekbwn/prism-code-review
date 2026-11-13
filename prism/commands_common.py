@@ -234,11 +234,15 @@ def _finalize_review(all_results, all_findings_list, risk_scores, files,
 def _dashboard_enabled(args):
     """True when the dashboard should open after a review.
 
-    Skipped for automated environments (no display, no point opening a
-    browser) and whenever the developer explicitly opts out.
+    An explicit ``--dashboard`` forces the open (even when auto-open would be
+    skipped, e.g. a non-tty); ``--no-dashboard`` always wins. Otherwise the
+    dashboard is skipped for automated environments (no display, no point
+    opening a browser).
     """
     if getattr(args, "no_dashboard", False):
         return False
+    if getattr(args, "dashboard", False):
+        return True
     if os.getenv("PRISM_NO_DASHBOARD"):
         return False
     if os.getenv("CI") or os.getenv("GITHUB_ACTIONS"):

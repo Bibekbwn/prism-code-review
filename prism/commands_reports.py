@@ -135,6 +135,30 @@ def _cmd_stats(args):
     print(get_report_summary())
 
 
+def _get_config_value(config, dotted):
+    """Read a config value by dotted path, e.g. quality_gates.max_complexity."""
+    node = config
+    for part in dotted.split("."):
+        if isinstance(node, dict) and part in node:
+            node = node[part]
+        else:
+            return None
+    return node
+
+
+def _set_config_value(config, dotted, value):
+    """Write a config value by dotted path, creating intermediate objects."""
+    parts = dotted.split(".")
+    node = config
+    for part in parts[:-1]:
+        nxt = node.get(part)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            node[part] = nxt
+        node = nxt
+    node[parts[-1]] = value
+
+
 def _cmd_config(args):
     config = load_config()
     if getattr(args, "set", None):
@@ -143,12 +167,12 @@ def _cmd_config(args):
             value = json.loads(value)
         except json.JSONDecodeError:
             pass
-        config[key] = value
+        _set_config_value(config, key, value)
         with open("prism.json", "w") as f:
             json.dump(config, f, indent=2)
         print("Set {} = {}".format(key, value))
     elif getattr(args, "get", None):
-        print("{} = {}".format(args.get, config.get(args.get)))
+        print("{} = {}".format(args.get, _get_config_value(config, args.get)))
     else:
         print(json.dumps(config, indent=2))
 

@@ -97,6 +97,8 @@ def build_parser():
                             default="balanced", help="AI review effort level")
     check_diff.add_argument("--fast", action="store_true",
                             help="Use two-pass summarization for large files")
+    check_diff.add_argument("--no-dashboard", action="store_true",
+                            help="Do not open the HTML dashboard after review")
 
     sub.add_parser("init", help="Create prism.json config")
     sub.add_parser("install-hook", help="Install pre-commit hook")
@@ -113,8 +115,10 @@ def build_parser():
     clear_cmd.add_argument("--force", action="store_true", help="Skip confirmation")
 
     agents_cmd = sub.add_parser("agents", help="List available agents")
-    agents_cmd.add_argument("--enable", help="Enable a specific agent")
-    agents_cmd.add_argument("--disable", help="Disable a specific agent")
+    agents_cmd.add_argument("--enable", nargs="+", metavar="NAME",
+                            help="Enable one or more agents")
+    agents_cmd.add_argument("--disable", nargs="+", metavar="NAME",
+                            help="Disable one or more agents")
 
     sub.add_parser("help", help="Show all commands and their uses")
     sub.add_parser("version", help="Show PRISM version")

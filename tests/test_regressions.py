@@ -579,6 +579,80 @@ class TestAgentToggle:
         cc._cmd_agents(argparse.Namespace(enable=None, disable="security"))
         assert json.loads((tmp_path / "prism.json").read_text())["agents"] == []
 
+    def test_disable_multiple_agents(self, tmp_path, monkeypatch, capsys):
+        import argparse
+        import prism.cli_commands as cc
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "prism.json").write_text(json.dumps(
+            {"agents": ["security", "quality", "policy", "test"]}))
+        cc._cmd_agents(argparse.Namespace(
+            enable=None, disable=["quality", "policy"]))
+        out = capsys.readouterr().out
+        assert "Disabled agent: quality" in out
+        assert "Disabled agent: policy" in out
+        assert json.loads((tmp_path / "prism.json").read_text())["agents"] == [
+            "security", "test"]
+
+    def test_enable_multiple_agents(self, tmp_path, monkeypatch, capsys):
+        import argparse
+        import prism.cli_commands as cc
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "prism.json").write_text(json.dumps({"agents": ["security"]}))
+        cc._cmd_agents(argparse.Namespace(
+            enable=["quality", "policy"], disable=None))
+        assert json.loads((tmp_path / "prism.json").read_text())["agents"] == [
+            "security", "quality", "policy"]
+
+
+class TestConfigDottedKeys:
+    def test_get_dotted_key(self, tmp_path, monkeypatch):
+        import argparse
+        import prism.commands_reports as cr
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "prism.json").write_text(json.dumps(
+            {"quality_gates": {"max_complexity": 15}}))
+        cr._cmd_config(argparse.Namespace(
+            get="quality_gates.max_complexity", set=None))
+        assert cr._get_config_value(
+            {"quality_gates": {"max_complexity": 15}},
+            "quality_gates.max_complexity") == 15
+
+    def test_set_dotted_key_creates_path(self, tmp_path, monkeypatch):
+        import argparse
+        import prism.commands_reports as cr
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "prism.json").write_text(json.dumps({"agents": []}))
+        cr._cmd_config(argparse.Namespace(
+            get=None, set=["quality_gates.max_file_length", "900"]))
+        config = json.loads((tmp_path / "prism.json").read_text())
+        assert config["quality_gates"]["max_file_length"] == 900
+        assert config["agents"] == []
+
+
+class TestDashboardFlag:
+    def _clear_env(self, monkeypatch):
+        for var in ("CI", "GITHUB_ACTIONS", "PRISM_NO_DASHBOARD"):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_dashboard_flag_forces_open(self, monkeypatch):
+        import argparse
+        from prism.commands_common import _dashboard_enabled
+
+        self._clear_env(monkeypatch)
+        assert _dashboard_enabled(argparse.Namespace(dashboard=True)) is True
+
+    def test_no_dashboard_wins_over_dashboard(self, monkeypatch):
+        import argparse
+        from prism.commands_common import _dashboard_enabled
+
+        self._clear_env(monkeypatch)
+        assert _dashboard_enabled(argparse.Namespace(
+            dashboard=True, no_dashboard=True)) is False
+
 
 class TestCachedRiskScore:
     def test_cached_findings_keep_their_risk(self):

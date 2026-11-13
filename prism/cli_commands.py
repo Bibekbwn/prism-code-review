@@ -348,6 +348,80 @@ def _cmd_check(args):
     sys.exit(0 if allowed else 1)
 
 
+def _prompt_staged_fixes(all_results, config):
+    """Offer to apply auto-fixes for medium/low findings before finalizing.
+
+    Mirrors ``prism check --prompt`` for a multi-file staged review. It only
+    runs when there are no blocking findings (a blocked commit should be fixed
+    by the developer, not auto-patched) and stdin is a terminal.
+    """
+    findings = [f for r in all_results for f in r.findings]
+    blocking_sev = set(config.get("block_on", ["critical", "high"]))
+    if any(f.blocker.value == "blocks" and f.severity.value in blocking_sev
+           for f in findings):
+        return
+
+    non_blocking = [f for f in findings
+                    if f.severity.value not in ("critical", "high")]
+    auto_fixable = get_auto_fixable(non_blocking)
+    if not auto_fixable:
+        return
+    if not sys.stdin.isatty():
+        print("(non-interactive mode - skipping prompts)")
+        return
+
+    by_file = {}
+    for f in auto_fixable:
+        by_file.setdefault(f.file, []).append(f)
+
+    print("")
+    print("=" * 50)
+    print("Auto-fixable medium/low findings:")
+    print("=" * 50)
+    for f in auto_fixable:
+        print("  [{}] {} {}:{}".format(
+            f.severity.value.upper(), f.rule_id, f.file, f.line))
+        print("      {}".format(f.message))
+        if f.suggested_code:
+            for code_line in f.suggested_code.split("\n"):
+                print("        {}".format(code_line))
+
+    try:
+        choice = input(
+            "Apply {} auto-fix(es)? (y/N) ".format(len(auto_fixable))
+        ).strip().lower()
+    except EOFError:
+        print("(non-interactive mode - skipping prompts)")
+        return
+    if choice not in ("y", "yes"):
+        print("Skipping. Commit will proceed as-is.")
+        return
+
+    applied = 0
+    for path_str, fs in by_file.items():
+        path = Path(path_str)
+        if not path.exists():
+            continue
+        content = path.read_text(errors="ignore")
+        fixes = []
+        for f in fs:
+            fixed = generate_fix(f, content)
+            if fixed is not None:
+                fixes.append((f, fixed))
+        if not fixes:
+            continue
+        if _apply_fixes_with_preview(path, content, fixes, assume_yes=True):
+            for fixed_finding, _ in fixes:
+                record_fix(fixed_finding.rule_id or "", True)
+            applied += len(fixes)
+
+    if applied:
+        print("Applied {} auto-fix(es). Review the changes before committing."
+              .format(applied))
+    else:
+        print("No auto-fixable changes written.")
+
+
 def _cmd_check_staged(args):
     json_mode = bool(getattr(args, "json", False))
 
@@ -420,6 +494,9 @@ def _cmd_check_staged(args):
                 except Exception as exc:
                     logger.error("Failed to review %s: %s", f, exc)
                     _status("  [error] {}: {}".format(f, exc))
+
+    if getattr(args, "prompt", False) and not json_mode:
+        _prompt_staged_fixes(all_results, config)
 
     _finalize_review(all_results, all_findings_list, risk_scores, files,
                      config, json_mode, test_results, args)

@@ -287,8 +287,8 @@ def _cmd_init(args):
             "agents": DEFAULT_AGENTS,
             "block_on": ["critical", "high"],
             "quality_gates": {
-                "max_complexity": 10,
-                "max_file_length": 500,
+                "max_complexity": 15,
+                "max_file_length": 800,
                 "min_coverage": 0,
             },
             "confidence_threshold": CONFIDENCE_THRESHOLD,
@@ -406,8 +406,8 @@ OTHER COMMANDS:
     prism mode regex                Regex agents only (no API calls)
     prism mode none                 No agents at all (reports only)
     prism mode all                  Regex + AI agents (default)
-    prism agents --enable <agent>   Re-enable a disabled agent
-    prism agents --disable <agent>  Switch off a single agent (e.g. 'ai_quality')
+    prism agents --enable <agent>   Re-enable one or more disabled agents
+    prism agents --disable <agent>  Switch off one or more agents (e.g. 'ai_quality')
     prism ignore                    List files skipped by pre-commit review
     prism ignore add <pattern>      Skip a file/folder (e.g. 'docs/', '*.png')
     prism ignore remove <pattern>   Stop skipping a pattern
@@ -454,34 +454,36 @@ EXAMPLES:
 def _cmd_agents(args):
     """List agents and their on/off state; toggle with --enable/--disable."""
     config = load_config()
+
+    enable = getattr(args, "enable", None) or []
+    disable = getattr(args, "disable", None) or []
+    if isinstance(enable, str):
+        enable = [enable]
+    if isinstance(disable, str):
+        disable = [disable]
+
+    for name in enable:
+        agents_cfg = config.get("agents", DEFAULT_AGENTS)
+        if _set_agent_enabled(agents_cfg, name, True):
+            config["agents"] = agents_cfg
+            _save_config(config)
+            print("Enabled agent: {}".format(name))
+        else:
+            print("Agent already enabled: {}".format(name))
+
+    for name in disable:
+        agents_cfg = config.get("agents", DEFAULT_AGENTS)
+        if name not in _agent_table(agents_cfg):
+            print("Agent not found: {}".format(name))
+            continue
+        if _set_agent_enabled(agents_cfg, name, False):
+            config["agents"] = agents_cfg
+            _save_config(config)
+            print("Disabled agent: {}".format(name))
+        else:
+            print("Agent already disabled: {}".format(name))
+
     table = _agent_table(config.get("agents", DEFAULT_AGENTS))
-
-    enable = getattr(args, "enable", None)
-    disable = getattr(args, "disable", None)
-
-    if enable:
-        agents_cfg = config.get("agents", DEFAULT_AGENTS)
-        if _set_agent_enabled(agents_cfg, enable, True):
-            config["agents"] = agents_cfg
-            _save_config(config)
-            table = _agent_table(agents_cfg)
-            print("Enabled agent: {}".format(enable))
-        else:
-            print("Agent already enabled: {}".format(enable))
-
-    if disable:
-        agents_cfg = config.get("agents", DEFAULT_AGENTS)
-        if disable not in _agent_table(agents_cfg):
-            print("Agent not found: {}".format(disable))
-            return
-        if _set_agent_enabled(agents_cfg, disable, False):
-            config["agents"] = agents_cfg
-            _save_config(config)
-            table = _agent_table(agents_cfg)
-            print("Disabled agent: {}".format(disable))
-        else:
-            print("Agent already disabled: {}".format(disable))
-
     print("")
     print("Agents (prism.json \"agents\"):")
     enabled = {name for name, on in table.items() if on}
@@ -495,4 +497,5 @@ def _cmd_agents(args):
         print("  [{:8}] {}{}".format(
             state, name, ": " + desc if desc else ""))
     print("")
-    print("Toggle one: prism agents --enable <agent> | --disable <agent>")
+    print("Toggle one: prism agents --enable <agent> [<agent>...] "
+          "| --disable <agent> [<agent>...]")

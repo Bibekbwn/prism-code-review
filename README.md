@@ -85,7 +85,6 @@ git commit
 ```bash
 # Clone the repo
 git clone <repo-url>
-cd hackathon
 
 # Install PRISM (Gemini only — default)
 pip install -e .
@@ -111,10 +110,10 @@ pip install -e .[all]
 prism key set --provider gemini --key YOUR_GEMINI_API_KEY
 
 # Or switch to Claude
-prism key set --provider claude --key YOUR_ANTHROPIC_API_KEY
+prism key set --provider claude --key YOUR_ANTHROPIC_API_KEY ( not for this version)
 
 # Or switch to OpenAI
-prism key set --provider openai --key YOUR_OPENAI_API_KEY
+prism key set --provider openai --key YOUR_OPENAI_API_KEY 
 ```
 
 The `prism key set` command writes `.env` for you and sets `MODEL_PROVIDER`.
@@ -169,6 +168,7 @@ Every command available in PRISM, with all flags and options.
 prism check path/to/file.py              # Review with all configured agents
 prism check path/to/file.py --json       # Output results as JSON
 prism check path/to/file.py --fix        # Apply auto-fixable changes
+prism check path/to/file.py --fix --yes  # Apply without the confirmation prompt
 prism check path/to/file.py --prompt     # Interactively ask about medium/low findings
 prism check path/to/file.py --effort lite    # Only regex agents (fast, no API)
 prism check path/to/file.py --effort balanced  # Regex + AI agents (default)
@@ -180,6 +180,7 @@ prism check path/to/file.py --fast       # Two-pass summarization for large file
 |------|-------------|
 | `--json` | Output results as machine-readable JSON |
 | `--fix` | Apply auto-fixable changes to the file |
+| `--yes` | Apply `--fix` changes without the confirmation prompt |
 | `--prompt` | Ask developer: apply / skip / cancel for medium/low findings |
 | `--effort {lite,balanced,max}` | AI review effort level (default: `balanced`) |
 | `--fast` | Use two-pass summarization for large files (10K+ lines) |
@@ -190,12 +191,27 @@ prism check path/to/file.py --fast       # Two-pass summarization for large file
 
 #### `prism check-diff` — Review a PR diff against a base branch
 
+`prism diff` is an alias for the same command.
+
 ```bash
 prism check-diff                                  # Diff against origin/main
 prism check-diff --base origin/develop            # Diff against another branch
 prism check-diff --base origin/main --effort lite # Regex agents only (no API)
 prism check-diff --base origin/main --json        # Machine-readable JSON
+prism check-diff --base origin/main --fast        # Two-pass summarization
+prism check-diff --no-dashboard                   # Do not open the dashboard
+prism diff --base origin/main                     # Alias for check-diff
 ```
+
+| Flag | Description |
+|------|-------------|
+| `--base <ref>` | Base ref to diff against (default: `origin/main`) |
+| `--json` | Output results as JSON |
+| `--effort {lite,balanced,max}` | AI review effort level |
+| `--fast` | Use two-pass summarization for large files |
+| `--no-dashboard` | Do not open the HTML dashboard after review |
+
+**Exit code:** `0` if commit allowed, `1` if blocking findings or failed quality gates exist.
 
 Use this in CI: a fresh checkout has an empty git index, so `check-staged` would
 review nothing. `check-diff` reviews the files changed between the base branch
@@ -208,20 +224,21 @@ git add .
 prism check-staged                       # Review all staged files
 prism check-staged --effort lite         # Only regex agents (fast)
 prism check-staged --effort balanced     # Regex + AI agents (default)
-prism check-staged --json                # Output as JSON (used by pre-commit hook)
-prism check-staged --prompt              # Interactive prompts for medium/low findings
+prism check-staged --json                # Machine-readable JSON
+prism check-staged --prompt              # Offer to auto-fix medium/low findings
 prism check-staged --test                # Run pytest on changed Python files first
-prism check-staged --dashboard           # Open dashboard after review
+prism check-staged --dashboard           # Force-open the dashboard after review
 prism check-staged --fast                # Two-pass summarization for large files
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--json` | Output results as JSON (stdout is pure JSON; status lines go to stderr) |
-| `--prompt` | Interactive prompts for medium/low findings |
 | `--effort {lite,balanced,max}` | AI review effort level |
 | `--test` | Run pytest on changed Python files before review |
-| `--dashboard` | Open visual dashboard after review |
+| `--prompt` | Offer to apply auto-fixes for medium/low findings (only when nothing is blocking; skipped when stdin is not a terminal) |
+| `--dashboard` | Force-open the visual dashboard after review (overrides auto-open detection) |
+| `--no-dashboard` | Do not open the HTML dashboard after review |
 | `--fast` | Two-pass summarization for large files |
 
 **Exit code:** `0` if commit allowed, `1` if blocking findings or failed quality gates exist (the pre-commit hook uses this).
@@ -334,15 +351,17 @@ prism agents --disable <name>       # Disable a specific agent
 #### `prism config` — View or manage configuration
 
 ```bash
-prism config                        # Show full prism.json
-prism config --get block_on         # Get a specific config value
-prism config --set max_complexity 8 # Set a config value
+prism config                                        # Show full prism.json
+prism config --get block_on                         # Get a top-level value
+prism config --get quality_gates.max_complexity     # Get a nested value
+prism config --set confidence_threshold 0.8         # Set a top-level value
+prism config --set quality_gates.max_complexity 15  # Set a nested value
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--get <key>` | Print the value of a config key |
-| `--set <key> <value>` | Set a config value (JSON-parsed if valid JSON) |
+| `--get <key>` | Print the value of a config key (supports dotted paths like `quality_gates.max_complexity`) |
+| `--set <key> <value>` | Set a config value (JSON-parsed if valid JSON; supports dotted paths) |
 
 #### `prism init` — Initialize configuration
 
@@ -376,7 +395,7 @@ PRISM caches file hashes and findings in `.prism-cache.json`. On subsequent runs
 prism install-hook
 ```
 
-Writes `.git/hooks/pre-commit` that runs `python -m prism.cli check-staged --prompt --json` on every `git commit`. Blocks the commit if any critical/high findings exist.
+Writes `.git/hooks/pre-commit` that runs `python -m prism.cli check-staged --prompt` on every `git commit`. Blocks the commit if any critical/high findings exist.
 
 #### `prism uninstall-hook` — Remove pre-commit hook
 
@@ -678,7 +697,7 @@ PRISM runs two layers of review. The **deterministic** regex agents run uncondit
 | `security` | `SECU-XXX` | Secrets (22 patterns), eval(), exec(), os.system(), SQL injection, XSS, CVEs | Yes (critical/high) |
 | `quality` | `QUAL-XXX` | File/function length, complexity, naming, imports (docstrings, type hints, magic numbers, TODO markers, duplication are opt-in) | Warns (advisory) |
 | `policy` | `POL-XXX` | SPDX license headers, branch naming, banned patterns, copyright | Warns |
-| `test` | `TST-XXX` | Weak assertions, test naming, coverage measurement | Yes (no tests) |
+| `test` | `TST-XXX` | Weak assertions, test naming, coverage measurement | Warns (advisory) |
 | `ai_security` | `SECU-AI-XXX` | AI semantic review of secrets, injection, auth flaws | Depends on severity |
 | `ai_quality` | `QUAL-AI-XXX` | AI semantic review of complexity, duplication, maintainability | Depends on severity |
 | `ai_policy` | `POL-AI-XXX` | AI semantic review of documentation, compliance, standards | Depends on severity |
@@ -809,7 +828,7 @@ Install the hook so PRISM runs automatically on every `git commit`:
 prism install-hook
 ```
 
-The hook runs `python -m prism.cli check-staged --prompt --json`. If any critical/high findings exist, the commit is blocked with exit code 1. To remove it:
+The hook runs `python -m prism.cli check-staged --prompt`. If any critical/high findings exist, the commit is blocked with exit code 1. To remove it:
 
 ```bash
 prism uninstall-hook
