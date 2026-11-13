@@ -5,11 +5,44 @@ A multi-agent code review pipeline that runs on the developer's machine
 before code is pushed to GitHub. Each agent checks a specific concern.
 """
 
+import os
 from pathlib import Path
 
 __version__ = "2.0.0"
 
 _ENV_LOADED = False
+
+
+def _parse_env_file(path):
+    """Parse a .env file using only the standard library.
+
+    ``python-dotenv`` is an optional extra, so a plain ``pip install`` must not
+    depend on it: without this fallback a .env written by ``prism key set`` is
+    ignored and the AI agents report "no API key configured" with no clue why.
+    """
+    values = {}
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return values
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if not key:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        values[key] = value
+    return values
 
 
 def load_env():
@@ -25,11 +58,6 @@ def load_env():
         return
     _ENV_LOADED = True
 
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return
-
     here = Path(__file__).resolve().parent
     # Project-local .env wins over the tool's own config, so a developer can
     # point PRISM at a different key without editing the install.
@@ -43,9 +71,17 @@ def load_env():
         here.parent.parent / ".env",
     )
     for candidate in candidates:
-        if candidate.exists():
+        if not candidate.exists():
+            continue
+        try:
+            from dotenv import load_dotenv
+        except ImportError:
+            # Mirror python-dotenv's default: existing environment wins.
+            for key, value in _parse_env_file(candidate).items():
+                os.environ.setdefault(key, value)
+        else:
             load_dotenv(candidate)
-            return
+        return
 
 
 load_env()

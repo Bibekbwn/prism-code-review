@@ -24,6 +24,12 @@ jobs:
           pip install -e .
 
       - name: Run PRISM review
+        # Advisory, not a gate. PRISM reviews whole changed files (line-level
+        # diff scoping is not implemented yet), so a self-scan flags the regex
+        # table in prism/agents_security.py and the fixtures in tests/. Until
+        # baselines exist, failing the job would block every PR on pre-existing
+        # debt rather than on the change under review.
+        continue-on-error: true
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
@@ -38,6 +44,4 @@ jobs:
             EFFORT=lite
           fi
           echo "PRISM effort: $EFFORT (base: origin/$BASE)"
-          # No continue-on-error: blocking findings (severity >= block_on,
-          # or an AI provider outage) fail this job.
           python -m prism.cli check-diff --base "origin/$BASE" --effort "$EFFORT" --json

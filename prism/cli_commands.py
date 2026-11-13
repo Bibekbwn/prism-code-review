@@ -538,7 +538,9 @@ def _cmd_check_staged(args):
     files_to_review = []
     for f in files:
         cached = get_cached_findings(f, cache)
-        if cached and f in unchanged:
+        # An empty list is a valid cache entry (file reviewed, no findings),
+        # so test for None rather than truthiness.
+        if cached is not None and f in unchanged:
             per_file[f] = {
                 "findings": list(cached),
                 "results": _findings_to_agent_results(cached),
@@ -600,9 +602,14 @@ def _cmd_check_diff(args):
             sys.exit(2)
 
     files = [f for f in get_diff_files(base) if Path(f).exists()]
+    # check-staged honours .prismignore (get_staged_files applies it); check-diff
+    # must do the same or a docs-only PR fails the review on README wording.
+    files, skipped = filter_files(files)
+    if skipped:
+        _status("Skipped (ignored): {} file(s)".format(len(skipped)))
     if not files:
         if json_mode:
-            print(json.dumps(_empty_staged_output(files), indent=2))
+            print(json.dumps(_empty_staged_output(files, skipped), indent=2))
         else:
             _status("No changed files to review.")
         sys.exit(0)
@@ -675,7 +682,9 @@ def _cmd_scan(args):
     files_to_review = []
     for f in files:
         cached = get_cached_findings(f, cache)
-        if cached and f in unchanged:
+        # An empty list is a valid cache entry (file reviewed, no findings),
+        # so test for None rather than truthiness.
+        if cached is not None and f in unchanged:
             per_file[f] = {
                 "findings": list(cached),
                 "results": _findings_to_agent_results(cached),
