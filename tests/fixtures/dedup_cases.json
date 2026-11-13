@@ -24,6 +24,12 @@
     "collapse": false
   },
   {
+    "name": "same secret reworded, same line",
+    "a": {"category": "Secret Exposure", "message": "Possible api key detected"},
+    "b": {"category": "Secret Exposure", "message": "Hardcoded api key in source"},
+    "collapse": true
+  },
+  {
     "name": "secret and performance",
     "a": {"category": "Secret Exposure", "message": "Hardcoded AWS key"},
     "b": {"category": "Performance", "message": "Nested loop O(n^2)"},
@@ -33,6 +39,42 @@
     "name": "same family generic subjects",
     "a": {"category": "Secret Exposure", "message": "Hardcoded secret found"},
     "b": {"category": "Secret Exposure", "message": "Hardcoded password found"},
+    "collapse": false
+  },
+  {
+    "name": "secret noun reworded",
+    "a": {"category": "Secret Exposure", "message": "Possible api key detected"},
+    "b": {"category": "Hardcoded Secret", "message": "AWS key hardcoded"},
+    "collapse": true
+  },
+  {
+    "name": "same marker two rule names",
+    "a": {"category": "Incomplete Code", "message": "Found 'TODO' marker"},
+    "b": {"category": "Invalid Issue Reference", "message": "Found 'TODO' marker"},
+    "collapse": true
+  },
+  {
+    "name": "same rule twice on one line",
+    "a": {"category": "Dangerous Pattern", "message": "Use of eval() - code injection risk"},
+    "b": {"category": "Dangerous Pattern", "message": "Use of eval() - code injection risk"},
+    "collapse": true
+  },
+  {
+    "name": "credential corroborates a named secret",
+    "a": {"category": "Secret Exposure", "message": "Possible api key detected"},
+    "b": {"category": "Secret Exposure", "message": "Possible credential detected"},
+    "collapse": true
+  },
+  {
+    "name": "two named secrets, no provider",
+    "a": {"category": "Secret Exposure", "message": "Possible api key detected"},
+    "b": {"category": "Secret Exposure", "message": "Possible auth token detected"},
+    "collapse": false
+  },
+  {
+    "name": "quality and performance",
+    "a": {"category": "Performance", "message": "Nested loop O(n^2)"},
+    "b": {"category": "Duplication", "message": "Duplicated block of code"},
     "collapse": false
   }
 ]

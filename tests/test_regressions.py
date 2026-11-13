@@ -56,10 +56,18 @@ class TestDedup:
                    AgentResult("ai_quality", [f2]),
                    AgentResult("security", [f3])]
         cleaned = dedupe_results(results)
-        agents = {r.agent_name: len(r.findings) for r in cleaned}
-        assert agents.get("ai_security") == 1
-        assert "ai_quality" not in agents  # duplicate collapsed
-        assert agents.get("security") == 1  # regex kept
+        by_agent = {r.agent_name: r.findings for r in cleaned}
+        # One finding for the line. The AI agent raised it first, and the other
+        # two agents are credited on it rather than repeating it.
+        assert len(by_agent["ai_security"]) == 1
+        # An AI agent whose only finding was somebody else's is dropped: the
+        # report lists the agents that still have something to say.
+        assert "ai_quality" not in by_agent
+        # The regex agent ran and found nothing of its own: its result stays as
+        # the record that it ran, with no findings.
+        assert by_agent["security"] == []
+        assert by_agent["ai_security"][0].corroborated_by == [
+            "ai_quality", "security"]
 
 
 class TestAutoFix:
@@ -531,6 +539,65 @@ class TestDedupQualifierEdge:
         cleaned = dedupe_results([AgentResult("ai_security", [f1]),
                                   AgentResult("ai_quality", [f2])])
         assert len(cleaned) == 2
+
+
+class TestDedupDeterministic:
+    """Two regex agents flag the same line in different words.
+
+    They were never collapsed, so one hardcoded key showed up as several
+    findings and inflated the blocking count.
+    """
+
+    def test_two_regex_agents_same_issue_collapse(self):
+        f1 = _finding(agent="security", category="Secret Exposure",
+                      message="Possible api key detected", line=7)
+        f2 = _finding(agent="policy", category="Banned Pattern",
+                      message="Hardcoded credential in source", line=7)
+        cleaned = dedupe_results([AgentResult("security", [f1]),
+                                  AgentResult("policy", [f2])])
+        assert sum(len(r.findings) for r in cleaned) == 1
+        assert cleaned[0].findings[0].corroborated_by == ["policy"]
+        assert cleaned[1].findings == []
+
+    def test_regex_pair_on_different_lines_is_kept(self):
+        f1 = _finding(agent="security", category="Secret Exposure",
+                      message="Possible api key detected", line=7)
+        f2 = _finding(agent="policy", category="Banned Pattern",
+                      message="Hardcoded credential in source", line=8)
+        cleaned = dedupe_results([AgentResult("security", [f1]),
+                                  AgentResult("policy", [f2])])
+        assert len(cleaned) == 2
+
+    def test_higher_severity_copy_survives_and_keeps_corroboration(self):
+        f1 = _finding(agent="security", category="Secret Exposure",
+                      message="Possible api key detected", line=9,
+                      severity=Severity.LOW)
+        f2 = _finding(agent="policy", category="Banned Pattern",
+                      message="Hardcoded credential in source", line=9,
+                      severity=Severity.CRITICAL)
+        cleaned = dedupe_results([AgentResult("security", [f1]),
+                                  AgentResult("policy", [f2])])
+        # The stronger copy replaces the weaker one in the result that was
+        # holding it, so the finding ends up with the agent that reported it at
+        # critical, and the weaker agent is credited on it.
+        assert sum(len(r.findings) for r in cleaned) == 1
+        kept = next(f for r in cleaned for f in r.findings)
+        assert kept.severity == Severity.CRITICAL
+        assert kept.agent == "policy"
+        assert kept.corroborated_by == ["security"]
+
+    def test_corroboration_is_not_counted_twice_for_one_agent(self):
+        f1 = _finding(agent="security", category="Secret Exposure",
+                      message="Possible api key detected", line=11)
+        f2 = _finding(agent="policy", category="Banned Pattern",
+                      message="Hardcoded credential in source", line=11)
+        f3 = _finding(agent="policy", category="Banned Pattern",
+                      message="Hardcoded credential in source", line=11,
+                      rule_id="POL-OTHER")
+        cleaned = dedupe_results([AgentResult("security", [f1]),
+                                  AgentResult("policy", [f2, f3])])
+        assert sum(len(r.findings) for r in cleaned) == 1
+        assert cleaned[0].findings[0].corroborated_by == ["policy"]
 
 
 class TestHookWiring:

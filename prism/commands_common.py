@@ -150,6 +150,7 @@ def _findings_to_agent_results(cached_findings):
             blocker=Blocker.BLOCKS if sev in ("critical", "high") else Blocker.WARNS,
             confidence=item.get("confidence", 0.85),
             rule_id=item.get("rule_id"),
+            corroborated_by=list(item.get("corroborated_by") or []),
         )
         grouped.setdefault(f.agent, []).append(f)
     results = []
@@ -292,6 +293,7 @@ def _finding_to_dict(finding, content=""):
         "suggested_code": _suggested_code_for(finding, content),
         "confidence": finding.confidence,
         "rule_id": finding.rule_id,
+        "corroborated_by": list(finding.corroborated_by),
     }
 
 

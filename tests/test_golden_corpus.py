@@ -12,7 +12,7 @@ import pytest
 
 from prism.agents import Finding, Severity
 from prism.autofix import apply_fixes, generate_fix
-from prism.cli_review import _similar_finding
+from prism.cli_review import _same_issue
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -63,7 +63,7 @@ class TestDedupCorpus:
     def test_case(self, case):
         a = _finding(category=case["a"]["category"], message=case["a"]["message"])
         b = _finding(category=case["b"]["category"], message=case["b"]["message"])
-        assert _similar_finding(a, b) is case["collapse"]
+        assert _same_issue(a, b) is case["collapse"]
 
     def test_precision_and_recall_are_reported(self):
         cases = json.loads((FIXTURES / "dedup_cases.json").read_text(encoding="utf-8"))
@@ -72,8 +72,8 @@ class TestDedupCorpus:
         assert positives and negatives
 
         tp = sum(1 for c in positives
-                 if _similar_finding(_finding(**c["a"]), _finding(**c["b"])))
+                 if _same_issue(_finding(**c["a"]), _finding(**c["b"])))
         tn = sum(1 for c in negatives
-                 if not _similar_finding(_finding(**c["a"]), _finding(**c["b"])))
+                 if not _same_issue(_finding(**c["a"]), _finding(**c["b"])))
         assert tp == len(positives)
         assert tn == len(negatives)

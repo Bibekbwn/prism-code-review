@@ -38,6 +38,9 @@ class Finding:
     auto_fixable: bool = False
     confidence: float = 1.0
     rule_id: Optional[str] = None
+    # Other agents that raised the same issue. Populated by dedupe_results();
+    # empty for a finding nothing else corroborated.
+    corroborated_by: List[str] = field(default_factory=list)
 
 
 @dataclass
