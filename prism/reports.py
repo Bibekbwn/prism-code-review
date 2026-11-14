@@ -24,6 +24,23 @@ def _ensure_dir():
     Path(REPORTS_DIR).mkdir(parents=True, exist_ok=True)
 
 
+def _next_report_id() -> str:
+    """Return a report ID that no stored report is already using.
+
+    The ID is a timestamp with microsecond precision, and the Windows clock
+    advances in ~15 ms steps, so two reviews saved back to back could be handed
+    the same ID. The second report then overwrote the first on disk while the
+    index kept both entries, so the totals counted one report twice and a review
+    vanished. A suffix keeps both files and keeps the ID readable.
+    """
+    base = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    candidate, suffix = base, 1
+    while os.path.exists(os.path.join(REPORTS_DIR, "{}.json".format(candidate))):
+        candidate = "{}-{}".format(base, suffix)
+        suffix += 1
+    return candidate
+
+
 def save_report(
     files_reviewed: List[str],
     findings: List[dict],
@@ -43,7 +60,7 @@ def save_report(
     """
     _ensure_dir()
 
-    report_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    report_id = _next_report_id()
     report = {
         "id": report_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),

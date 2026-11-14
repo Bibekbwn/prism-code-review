@@ -46,14 +46,17 @@ jobs:
       # `check` is the command developers actually run, and it is the one that
       # touches the filesystem, reads the ignore list and writes a report. The
       # smoke test above only proves the module imports, so a Windows-only
-      # failure in the review path would not be caught until someone ran it by
-      # hand. `lite` keeps it deterministic (no API key needed) and the file is
-      # clean, so the command is expected to exit 0. RUNNER_TEMP is set on both
-      # runners, and Python writes the file so the shell does not have to.
+      # failure there would not be caught until someone ran it by hand. `lite`
+      # keeps it deterministic (no API key needed) and the file is clean, so the
+      # command is expected to exit 0.
+      #
+      # One python -c does the whole thing on purpose: `$RUNNER_TEMP` is a bash
+      # variable but not a pwsh one, so a shell-level path silently became
+      # "/prism_smoke.py" on windows-latest. Python resolves its own temp dir
+      # and exits with the CLI's status, which is the same on every shell.
       - name: Verify check command works
         run: |
-          python -c "import os; open(os.path.join(os.environ['RUNNER_TEMP'], 'prism_smoke.py'), 'w').write('def add(a, b):\n    return a + b\n')"
-          python -m prism.cli check "$RUNNER_TEMP/prism_smoke.py" --effort lite --no-dashboard --json
+          python -c "import subprocess, sys, tempfile, os; p = os.path.join(tempfile.gettempdir(), 'prism_smoke.py'); open(p, 'w').write('def add(a, b):\n    return a + b\n'); r = subprocess.run([sys.executable, '-m', 'prism.cli', 'check', p, '--effort', 'lite', '--no-dashboard', '--json'], capture_output=True, text=True); sys.stdout.write(r.stdout); sys.stderr.write(r.stderr); sys.exit(r.returncode)"
 
   lint:
     name: Lint

@@ -130,6 +130,29 @@ class TestTokenTotals:
         assert "Total tokens: 2,000 (in 1,600 / out 400) across 2 AI review(s)" in summary
         assert "2 call(s) used estimated counts" in summary
 
+    def test_back_to_back_reviews_get_distinct_ids(self, tmp_path, monkeypatch):
+        """Two reviews in the same clock tick must not share a report file.
+
+        The ID is a microsecond timestamp and the Windows clock moves in ~15 ms
+        steps, so back-to-back saves collided: the second report overwrote the
+        first while the index kept both, and the totals then counted one report
+        twice. This froze the clock to force the collision.
+        """
+        import datetime as _dt
+
+        frozen = _dt.datetime(2026, 1, 1, 0, 0, 0, tzinfo=_dt.timezone.utc)
+        monkeypatch.setattr(
+            reports, "datetime",
+            type("_Clock", (), {"now": staticmethod(lambda tz=None: frozen)})())
+
+        first = _save(tmp_path, monkeypatch, _token_usage(total=1200, calls=4))
+        second = _save(tmp_path, monkeypatch, _token_usage(total=800, calls=2))
+
+        assert first != second
+        assert len(list((tmp_path / ".prism-reports").glob("*.json"))) == 3
+        assert reports.get_findings_history()["total_tokens"] == 2000
+        assert reports.get_findings_history()["ai_reviews"] == 2
+
 
 class TestDashboardTokens:
     def test_dashboard_embeds_usage_and_renders_chart(self, tmp_path, monkeypatch):
