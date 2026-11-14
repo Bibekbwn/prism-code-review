@@ -169,7 +169,9 @@ py -m build          # -> dist/prism_review-2.0.0-py3-none-any.whl
 
 # On the teammate's machine, once. The [all] extra installs every provider SDK
 # plus python-dotenv; without an extra the regex agents run but AI agents skip:
-pip install "https://github.com/Bibekbwn/prism-code-review/releases/download/v2.0.0/prism_review-2.0.0-py3-none-any.whl[all]"
+# (the "prism-review[all] @ <url>" form is required: pip does not parse
+#  extras that are appended straight onto a direct wheel URL)
+pip install "prism-review[all] @ https://github.com/Bibekbwn/prism-code-review/releases/download/v2.0.0/prism_review-2.0.0-py3-none-any.whl"
 
 # Set the API key once for every project (tool-wide):
 prism key set --global --provider gemini --key YOUR_GEMINI_API_KEY
