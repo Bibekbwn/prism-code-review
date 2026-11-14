@@ -8,6 +8,7 @@ Rule IDs follow SonarQube convention: SECU-XXX
 import re
 from typing import List
 from prism.agents import BaseAgent, Finding, Severity, Blocker, register_agent
+from prism.langs import LANGUAGES, lang_for
 
 
 SECRET_PATTERNS = [
@@ -42,7 +43,64 @@ SECRET_PATTERNS = [
     # covered by the provider-specific patterns above; this catches .env files,
     # which are the most common place for real secrets to leak.
     (r'(?i)^\s*(?:\w+[_-])?(?:api[_-]?key|apikey|secret[_-]?(?:access[_-]?)?key|secretkey|password|passwd|pwd|token|access[_-]?key[_-]?id|access[_-]?token|auth[_-]?token|client[_-]?secret)\s*[:=]\s*([^\s"\']{6,})\s*$', "Unquoted Dotenv Secret", "SECU-123"),
+    # The generic patterns expect `name = "value"` or `name: "value"`. A C
+    # preprocessor constant and a shell export say the same thing with a keyword
+    # in front, and both were invisible.
+    (r'(?i)^\s*#define\s+\w*(?:key|token|secret|password|passwd|pwd)\s+"([^"\n]{8,})"', "C Preprocessor Secret", "SECU-124"),
+    (r'(?i)^\s*export\s+\w*(?:key|token|secret|password|passwd|pwd)\s*=\s*([^\s"\']{8,})', "Shell Exported Secret", "SECU-125"),
 ]
+
+# `name := "value"` declares a variable in Go the way `name = "value"` assigns
+# one elsewhere. The generic patterns only knew `:` and `=`, so a literal secret
+# in a short declaration was invisible; widening the operator once covers every
+# pattern above.
+SECRET_PATTERNS = [
+    (pattern.replace(r"\s*[:=]\s*", r"\s*(?::=|[:=])\s*"), label, rule_id)
+    for pattern, label, rule_id in SECRET_PATTERNS
+]
+
+# The base list is Python/Node-shaped. These are the same defect classes in the
+# languages a regex can see without a parser, keyed by LanguageSpec.name.
+_LANG_DANGEROUS = {
+    "go": [
+        (r'exec\.Command\(\s*"(?:/bin/|/usr/bin/)?(?:ba)?sh"', "Shell command via sh - command injection risk", "SECU-220"),
+        (r'template\.HTML\s*\(', "Unescaped HTML in template - XSS risk", "SECU-221"),
+    ],
+    "java": [
+        (r'Runtime\.getRuntime\(\)\.exec\s*\(', "Runtime.exec - command injection risk", "SECU-222"),
+        (r'MessageDigest\.getInstance\(\s*"MD5"', "Use of MD5 - weak hash", "SECU-223"),
+    ],
+    "csharp": [
+        (r'\bProcess\.Start\s*\(', "Process.Start - command injection risk", "SECU-224"),
+        (r'\bMD5\.Create\s*\(', "Use of MD5 - weak hash", "SECU-225"),
+    ],
+    "c": [
+        (r'\bsystem\s*\(', "Use of system() - command injection risk", "SECU-226"),
+        (r'\bgets\s*\(', "Use of gets() - unbounded read, buffer overflow", "SECU-227"),
+        (r'\bstrcpy\s*\(', "Use of strcpy() - unbounded copy, buffer overflow", "SECU-228"),
+    ],
+    "cpp": [
+        (r'\bsystem\s*\(', "Use of system() - command injection risk", "SECU-226"),
+        (r'\bgets\s*\(', "Use of gets() - unbounded read, buffer overflow", "SECU-227"),
+        (r'\bstrcpy\s*\(', "Use of strcpy() - unbounded copy, buffer overflow", "SECU-228"),
+    ],
+    "rust": [
+        (r'Command::new\(\s*"(?:/bin/|/usr/bin/)?(?:ba)?sh"', "Shell command via sh - command injection risk", "SECU-229"),
+        (r'\bmd5\s*::', "Use of MD5 - weak hash", "SECU-230"),
+    ],
+    "php": [
+        (r'\b(?:system|exec|shell_exec|passthru|proc_open)\s*\(', "Shell execution - command injection risk", "SECU-231"),
+        (r'\bmd5\s*\(', "Use of MD5 - weak hash", "SECU-232"),
+    ],
+    "ruby": [
+        (r'\bsystem\s*\(', "Use of system() - command injection risk", "SECU-233"),
+        (r'Digest::MD5\b', "Use of MD5 - weak hash", "SECU-234"),
+    ],
+    "javascript": [
+        (r'dangerouslySetInnerHTML', "dangerouslySetInnerHTML - XSS risk", "SECU-235"),
+        (r'child_process\.exec\s*\(', "child_process.exec - command injection risk", "SECU-236"),
+    ],
+}
 
 # Gitleaks-style false-positive filtering, split into two tiers:
 #   SECRET_VALUE_ALLOWLIST  — obvious placeholders inside the secret itself
@@ -107,6 +165,17 @@ class SecurityAgent(BaseAgent):
         findings: List[Finding] = []
         lines = content.split("\n")
         current_file = file_path
+        spec = lang_for(file_path)
+
+        # Reading a secret from the environment is a lookup, not a hardcoded
+        # value. Every language spells it differently, so a Go or Java
+        # `getenv` used to be reported as a leaked secret.
+        line_allowlist = SECRET_LINE_ALLOWLIST + [
+            pattern for lang in LANGUAGES for pattern in lang.env_lookup
+        ]
+        dangerous = list(DANGEROUS_PATTERNS)
+        if spec is not None:
+            dangerous += _LANG_DANGEROUS.get(spec.name, [])
 
         for i, line in enumerate(lines, 1):
             for pattern, label, rule_id in SECRET_PATTERNS:
@@ -124,7 +193,7 @@ class SecurityAgent(BaseAgent):
                        for v in SECRET_VALUE_ALLOWLIST):
                     continue
                 if any(re.search(a, line, re.IGNORECASE)
-                       for a in SECRET_LINE_ALLOWLIST):
+                       for a in line_allowlist):
                     continue
                 findings.append(Finding(
                     agent=self.name,
@@ -139,7 +208,7 @@ class SecurityAgent(BaseAgent):
                     rule_id=rule_id,
                 ))
 
-            for pattern, label, rule_id in DANGEROUS_PATTERNS:
+            for pattern, label, rule_id in dangerous:
                 if rule_id == "SECU-206-SAFE":
                     continue  # positive match, not a finding
                 if re.search(pattern, line, re.IGNORECASE):

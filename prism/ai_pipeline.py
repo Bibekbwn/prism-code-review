@@ -15,6 +15,7 @@ import concurrent.futures
 from prism.ai_providers import get_model, API_TIMEOUT
 from prism.ai_findings import parse_findings, verify_findings, _AGENT_PREFIX
 from prism.agents import Finding, Severity, Blocker
+from prism.langs import lang_for, strip_literals
 
 logger = logging.getLogger(__name__)
 
@@ -95,14 +96,24 @@ def chunk_content(content, max_lines=400, overlap=20):
 
 
 def build_skeleton(file_path, content):
-    """Extract a compact structural summary from Python source.
+    """Extract a compact structural summary from source.
 
     Returns a skeleton showing imports, classes, functions, and line numbers.
-    Non-Python files return an empty string.
+    Python is parsed with ``ast``. Every other known language falls back to a
+    scan of its declarations, because the model reviews the file either way and
+    a skeleton is what tells it where the functions are -- without one, a Go or
+    Rust file was sent to the model with no structure at all.
     """
-    import ast
-    if not file_path.endswith('.py'):
+    spec = lang_for(file_path)
+    if spec is None:
         return ""
+    if spec.name == "python":
+        return _python_skeleton(file_path, content)
+    return _decl_skeleton(file_path, content, spec)
+
+
+def _python_skeleton(file_path, content):
+    import ast
 
     try:
         tree = ast.parse(content)
@@ -130,6 +141,51 @@ def build_skeleton(file_path, content):
                 skeleton.append("  - {}".format(m))
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             skeleton.append("Function {} (line {})".format(node.name, node.lineno))
+    return "\n".join(skeleton)
+
+
+_DECL_CALL = re.compile(r"(\w+)\s*\(")
+_DECL_KEYWORD = re.compile(
+    r"^\s*(?:(?:export|default|public|private|protected|static|final|abstract|"
+    r"async|pub|unsafe|extern|suspend|override|open|internal|mutating)\s+)*"
+    r"(?:def|func|fn|function|fun|class|struct|enum|trait|interface|type)\b\s*")
+_DECL_RECEIVER = re.compile(r"^\([^)]*\)\s*")
+_DECL_ASSIGN = re.compile(r"^\s*(?:(?:const|let|var)\s+)?(\w+)\s*=")
+
+
+def _decl_name(code):
+    """The name a declaration line introduces.
+
+    A keyword (``func``, ``class``) is followed by the name, except in Go where
+    a method puts its receiver first. A line with no keyword is either a call
+    style declaration (``int main() {``) or an assigned function expression
+    (``const b = (x) => x``).
+    """
+    rest = _DECL_KEYWORD.sub("", code)
+    if rest != code:
+        match = re.match(r"(\w+)", _DECL_RECEIVER.sub("", rest))
+        if match:
+            return match.group(1)
+    # An assigned function expression names itself before the `=`, which is
+    # earlier than the parameter list, so it is tried first.
+    match = _DECL_ASSIGN.match(code) or _DECL_CALL.search(code)
+    return match.group(1) if match else "?"
+
+
+def _decl_skeleton(file_path, content, spec):
+    """Outline a non-Python file from the declarations the language uses."""
+    skeleton = ["File: {}".format(file_path)]
+    classes, functions = [], []
+    for i, line in enumerate(content.split("\n"), 1):
+        code = strip_literals(line, spec)
+        if spec.class_decl is not None and spec.class_decl.match(code):
+            classes.append("{} (line {})".format(_decl_name(code), i))
+        elif spec.func_decl is not None and spec.func_decl.match(code):
+            functions.append("{} (line {})".format(_decl_name(code), i))
+    if classes:
+        skeleton.append("Classes: {}".format(", ".join(classes)))
+    if functions:
+        skeleton.append("Functions: {}".format(", ".join(functions)))
     return "\n".join(skeleton)
 
 

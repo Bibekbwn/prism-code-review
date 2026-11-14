@@ -10,6 +10,8 @@ import re
 import hashlib
 import logging
 
+from prism.langs import lang_for
+
 logger = logging.getLogger(__name__)
 
 _CROSS_CHECK_CATEGORIES = {
@@ -29,6 +31,12 @@ _AGENT_PREFIX = {
     "ai_architecture": "ARC",
     "ai_performance": "PERF",
 }
+
+
+def _is_python(file_path):
+    """True when a suggested fix for ``file_path`` must parse as Python."""
+    spec = lang_for(file_path)
+    return spec is None or spec.name == "python"
 
 
 def _finding_id(prefix, item, file_path):
@@ -112,7 +120,10 @@ def verify_findings(findings, file_path, content):
             continue
         seen.add(key)
 
-        if f.suggested_code:
+        if f.suggested_code and _is_python(f.file):
+            # Only a Python fix can be parsed here. Rejecting a Go or Rust
+            # snippet for not being valid Python would discard a correct finding
+            # along with the suggestion attached to it.
             try:
                 import ast
                 ast.parse(f.suggested_code)

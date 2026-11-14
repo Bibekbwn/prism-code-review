@@ -541,6 +541,50 @@ class TestDedupQualifierEdge:
         assert len(cleaned) == 2
 
 
+class TestDedupModelWording:
+    """The model agents describe one issue in several ways.
+
+    Taken from a real Go review: six agents reported one hardcoded key and one
+    shell command as fourteen findings, because "credentials" and "API key" did
+    not match the singular secret word the check looked for, and "shell command"
+    against "os/exec using unsanitized user input" shared too few words.
+    """
+
+    def test_reworded_secret_collapses(self):
+        f1 = _finding(agent="security", category="Secret Exposure",
+                      message="Possible api key detected", line=9)
+        f2 = _finding(agent="ai_quality", category="security",
+                      message="Hardcoded API key detected in source code, "
+                              "which exposes sensitive credentials.", line=9)
+        cleaned = dedupe_results([AgentResult("security", [f1]),
+                                  AgentResult("ai_quality", [f2])])
+        assert sum(len(r.findings) for r in cleaned) == 1
+
+    def test_reworded_injection_collapses(self):
+        f1 = _finding(agent="security", category="Dangerous Pattern",
+                      message="Shell command via sh - command injection risk",
+                      line=16)
+        f2 = _finding(agent="ai_security", category="Injection vulnerabilities",
+                      message="Remote Command Execution (RCE) vulnerability via "
+                              "os/exec using unsanitized user input passed to a "
+                              "shell.", line=16)
+        cleaned = dedupe_results([AgentResult("security", [f1]),
+                                  AgentResult("ai_security", [f2])])
+        assert sum(len(r.findings) for r in cleaned) == 1
+
+    def test_secret_and_unrelated_issue_on_one_line_are_kept(self):
+        f1 = _finding(agent="ai_policy", category="Security and Error Handling",
+                      message="Potential Command Injection vulnerability. User "
+                              "input is directly executed via shell command.",
+                      line=15)
+        f2 = _finding(agent="ai_test", category="Untested public APIs",
+                      message="The Server struct and its handle method have "
+                              "zero test coverage.", line=15)
+        cleaned = dedupe_results([AgentResult("ai_policy", [f1]),
+                                  AgentResult("ai_test", [f2])])
+        assert sum(len(r.findings) for r in cleaned) == 2
+
+
 class TestDedupDeterministic:
     """Two regex agents flag the same line in different words.
 
@@ -1712,9 +1756,15 @@ class TestAIPipeline:
         last = chunks[-1]
         assert last[0] + len(last[1].split("\n")) - 1 == 900
 
-    def test_build_skeleton_non_python(self):
+    def test_build_skeleton_non_python_lists_declarations(self):
         from prism.ai_pipeline import build_skeleton
-        assert build_skeleton("a.js", "x") == ""
+        sk = build_skeleton("a.go", "package main\n\nfunc main() {\n\tprintln(1)\n}\n")
+        assert "File: a.go" in sk
+        assert "main (line 3)" in sk
+
+    def test_build_skeleton_unknown_file(self):
+        from prism.ai_pipeline import build_skeleton
+        assert build_skeleton("notes.md", "# Hello") == ""
 
     def test_build_skeleton_syntax_error(self):
         from prism.ai_pipeline import build_skeleton

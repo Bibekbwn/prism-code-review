@@ -133,16 +133,17 @@ def _kind_tokens(finding):
     return set()
 
 
-# Words that mark a finding as being about a hardcoded secret, whether they
-# appear in the category or in the message.
-_SECRET_FAMILY_WORDS = ("secret", "credential", "password", "passwd", "pwd",
-                        "apikey", "token", "private key")
-
-
 def _about_secret(finding):
-    """True when this finding is about a hardcoded secret."""
-    return any(any(n in view for n in _SECRET_FAMILY_WORDS)
-               for view in _views(finding))
+    """True when this finding is about a hardcoded secret.
+
+    Read off the nouns the finding actually names, so an inflected or reworded
+    one still counts: "Hardcoded API key detected" and "credential leakage" both
+    name a secret, where an exact word match only caught the singular
+    "credential" and the closed-up "apikey". Missing that, the copies the model
+    agents write for one secret were kept as separate findings.
+    """
+    return bool(_secret_subjects(_message_tokens(finding.message))
+                or _secret_subjects(_message_tokens(finding.category)))
 
 
 def _subject_of(finding):
@@ -189,7 +190,11 @@ def _same_secret(a, f):
     nouns_a = _secret_subjects(_message_tokens(a.message)) - _UNNAMED_SECRET_NOUNS
     nouns_b = _secret_subjects(_message_tokens(f.message)) - _UNNAMED_SECRET_NOUNS
 
-    if nouns_a and nouns_b and nouns_a != nouns_b:
+    # One side names no particular secret: it is agreeing that a secret is there,
+    # which is not a second secret. When both name one, the claims have to be
+    # compatible -- the same noun, or one naming a superset of the other ("api
+    # key" against "api key or secret string"), never two disjoint nouns.
+    if nouns_a and nouns_b and not (nouns_a <= nouns_b or nouns_b <= nouns_a):
         return False
 
     qa = _secret_qualifiers(_message_tokens(a.message))
@@ -246,7 +251,15 @@ def _same_issue(a, f):
     overlap = len(sa & sb) / len(sa | sb)
     if overlap >= 0.6:
         return True
-    return bool(sa <= sb or sb <= sa)
+    if sa <= sb or sb <= sa:
+        return True
+    # The same kind of problem, and at least one subject word in common. Two
+    # agents describe one defect in different words -- "shell command" against
+    # "os/exec using unsanitized user input" -- and the shared noun is the thing
+    # they are both pointing at. The kind check keeps a command injection from
+    # collapsing into the SQL injection beside it.
+    ka, kf = _kind_tokens(a), _kind_tokens(f)
+    return bool(ka and ka == kf and (sa & sb))
 
 
 def _rank(f):

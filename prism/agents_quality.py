@@ -13,6 +13,7 @@ import ast
 import re
 from typing import List
 from prism.agents import BaseAgent, Finding, Severity, Blocker, register_agent
+from prism.langs import lang_for, strip_literals
 
 
 MAX_FUNCTION_LENGTH = 80
@@ -43,7 +44,28 @@ QUALITY_DEFAULTS = {
 }
 
 
-def _count_lines_in_function(lines: list, start: int) -> int:
+def _count_lines_in_function(lines: list, start: int, spec=None) -> int:
+    """Lines the function declared at ``start`` occupies.
+
+    An indented body (Python, Ruby) ends at the first line that is not indented
+    deeper than its declaration. A brace-delimited body (Go, Rust, the C family)
+    ends when the braces opened after the declaration close again, which is the
+    only thing that marks the end of a function there.
+    """
+    if spec is not None and spec.body_style == "brace":
+        depth = 0
+        opened = False
+        for i in range(start, len(lines)):
+            for ch in strip_literals(lines[i], spec):
+                if ch == "{":
+                    depth += 1
+                    opened = True
+                elif ch == "}":
+                    depth -= 1
+            if opened and depth <= 0:
+                return i - start + 1
+        return len(lines) - start
+
     count = 1
     indent = len(lines[start]) - len(lines[start].lstrip())
     for i in range(start + 1, len(lines)):
@@ -57,23 +79,30 @@ def _count_lines_in_function(lines: list, start: int) -> int:
     return count
 
 
-def _cyclomatic_complexity(lines: list) -> int:
+def _cyclomatic_complexity(lines: list, spec=None) -> int:
     """Approximate cyclomatic complexity.
 
     Counts decision points rather than every `and`/`or` occurrence: the old
     version counted both plus every `if` in comments and strings, which
-    inflated simple functions past the threshold.
+    inflated simple functions past the threshold. The keywords are the ones the
+    language actually branches on, so a Go `select` counts and a Python `elif`
+    counts, and neither is charged to the other.
     """
+    words = spec.decision_words if spec else (
+        "if", "elif", "for", "while", "except", "with", "case")
+    ops = spec.logical_ops if spec else ("and", "or")
+    decision = re.compile(r"^\s*(?:" + "|".join(words) + r")\b")
+    logic = re.compile("|".join(
+        r"\b{}\b".format(op) if op.isalpha() else re.escape(op) for op in ops))
+
     complexity = 1
     for line in lines:
-        stripped = line.strip()
-        if stripped.startswith(("#", "//", "*", "/*", "*/")):
+        code = strip_literals(line, spec).strip()
+        if not code:
             continue
-        # Strip string literals so keywords inside text are not counted.
-        code = re.sub(r'"[^"]*"|\'[^\']*\'', '""', line)
-        if re.search(r'^\s*(if|elif|for|while|except|with|case)\b', code):
+        if decision.search(code):
             complexity += 1
-        elif re.search(r'\b(and|or)\b', code):
+        elif logic.search(code):
             complexity += 1
     return complexity
 
@@ -109,15 +138,17 @@ class QualityAgent(BaseAgent):
                 rule_id="QUAL-101",
             ))
 
+        spec = lang_for(file_path)
         func_starts = []
-        for i, line in enumerate(lines):
-            if re.match(r'^\s*(def |function |async def |public |private |protected )', line):
-                func_starts.append(i)
+        if spec is not None and spec.func_decl:
+            for i, line in enumerate(lines):
+                if spec.func_decl.match(strip_literals(line, spec)):
+                    func_starts.append(i)
 
         for start in func_starts:
-            func_lines = _count_lines_in_function(lines, start)
-            func_content = "\n".join(lines[start:start + func_lines])
-            complexity = _cyclomatic_complexity(func_content)
+            func_lines = _count_lines_in_function(lines, start, spec)
+            complexity = _cyclomatic_complexity(
+                lines[start:start + func_lines], spec)
 
             if self._on("function_length") and func_lines > MAX_FUNCTION_LENGTH:
                 findings.append(Finding(
@@ -391,12 +422,19 @@ def _check_duplication(content: str, file_path: str) -> List[Finding]:
 
 
 def _check_naming(content: str, file_path: str) -> List[Finding]:
-    """Check naming conventions."""
+    """Check naming conventions.
+
+    The convention is a property of the language, so a language that declares
+    none gets no finding rather than being judged by someone else's rules.
+    """
+    spec = lang_for(file_path)
+    if spec is None or spec.naming is None:
+        return []
     findings = []
     lines = content.split("\n")
 
     for i, line in enumerate(lines):
-        if file_path.endswith(".py"):
+        if spec.naming == "snake":
             # Check for CamelCase variables (not class/function names)
             # Valid: snake_case_with_underscores or single_word
             # Invalid: camelCase or PascalCase variables
@@ -420,7 +458,7 @@ def _check_naming(content: str, file_path: str) -> List[Finding]:
                         confidence=0.80,
                         rule_id="QUAL-107",
                     ))
-        elif file_path.endswith((".js", ".ts", ".jsx", ".tsx")):
+        elif spec.naming == "camel":
             match = re.match(r'^(\s*)(var|let|const)\s+(\w+)', line)
             if match:
                 var_name = match.group(3)

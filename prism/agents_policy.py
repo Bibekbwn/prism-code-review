@@ -20,6 +20,7 @@ default and opt-in via prism.json:
 import re
 from typing import List
 from prism.agents import BaseAgent, Finding, Severity, Blocker, register_agent
+from prism.langs import lang_for, strip_literals
 
 # Copyright/SPDX header checks are opt-in via prism.json:
 #   "policy": {"headers": true}
@@ -61,9 +62,7 @@ class PolicyAgent(BaseAgent):
         print_on = CHECK_PRINT_ENABLED or policy.get("check_print", False)
         todo_refs_on = CHECK_TODO_REFS_ENABLED or policy.get("check_todo_refs", False)
 
-        if (headers_on and self.require_header and file_path.endswith(
-            (".py", ".js", ".ts", ".go", ".rs", ".java", ".c", ".cpp", ".h")
-        )):
+        if headers_on and self.require_header and lang_for(file_path) is not None:
             first_10 = "\n".join(lines[:10])
             if not re.search(r"Copyright\s+\(c\)", first_10):
                 findings.append(Finding(
@@ -95,9 +94,10 @@ class PolicyAgent(BaseAgent):
             re.search(r'argparse|__main__|def main\b', content)
         )
         docstrings = _docstring_lines(content)
+        spec = lang_for(file_path)
         for pattern, message, rule_id in banned:
             for i, line in enumerate(lines):
-                if _matches_code(pattern, line, i + 1, docstrings):
+                if _matches_code(pattern, line, i + 1, docstrings, spec):
                     findings.append(Finding(
                         agent=self.name,
                         severity=Severity.LOW,
@@ -112,7 +112,7 @@ class PolicyAgent(BaseAgent):
                     ))
         if print_on and not is_cli_entry:
             for i, line in enumerate(lines):
-                if _matches_code(r'print\(', line, i + 1, docstrings):
+                if _matches_code(r'print\(', line, i + 1, docstrings, spec):
                     findings.append(Finding(
                         agent=self.name,
                         severity=Severity.LOW,
@@ -128,7 +128,7 @@ class PolicyAgent(BaseAgent):
 
         if todo_refs_on:
             for i, line in enumerate(lines):
-                match = re.search(r'TODO\s*\((\w+)\)', line)
+                match = re.search(r'TODO\s*\((\w+)\)', strip_literals(line, spec))
                 if match:
                     issue_ref = match.group(1)
                     if not re.match(r'^[A-Z]+-\d+$', issue_ref):
@@ -163,31 +163,14 @@ SPDX_LICENSES = {
 }
 
 
-def _strip_literals(line: str) -> str:
-    """Remove single-line string/regex literals so patterns only match code."""
-    out = []
-    i = 0
-    quote = None
-    while i < len(line):
-        ch = line[i]
-        if quote:
-            if ch == "\\":
-                i += 2
-                continue
-            if ch == quote:
-                quote = None
-            i += 1
-            continue
-        if ch in ("'", '"'):
-            quote = ch
-            out.append(" ")
-            i += 1
-            continue
-        if ch == "#":
-            break
-        out.append(ch)
-        i += 1
-    return "".join(out)
+def _strip_literals(line: str, spec=None) -> str:
+    """Remove single-line string/regex literals so patterns only match code.
+
+    Which characters open a comment and a string is a property of the language:
+    a rule that only knew ``#`` read a commented-out ``debugger;`` in Go or Rust
+    as a real statement.
+    """
+    return strip_literals(line, spec)
 
 
 def _docstring_lines(content: str) -> set:
@@ -224,16 +207,16 @@ def _docstring_lines(content: str) -> set:
     return lines
 
 
-def _matches_code(pattern, line, lineno=None, docstrings=None):
+def _matches_code(pattern, line, lineno=None, docstrings=None, spec=None):
     """True when ``pattern`` matches the line's code, ignoring literals."""
     if docstrings and lineno in docstrings:
         return False
-    return re.search(pattern, _strip_literals(line)) is not None
+    return re.search(pattern, strip_literals(line, spec)) is not None
 
 
 def _check_license_header(content: str, file_path: str, allowed_licenses: list) -> List[Finding]:
     """Verify the file header declares an allowed SPDX license."""
-    if not file_path.endswith((".py", ".js", ".ts", ".go", ".rs", ".java", ".c", ".cpp", ".h")):
+    if lang_for(file_path) is None:
         return []
     findings = []
     first_20 = "\n".join(content.split("\n")[:20])

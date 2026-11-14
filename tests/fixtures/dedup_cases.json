@@ -72,6 +72,12 @@
     "collapse": false
   },
   {
+    "name": "extra family word on the same noun",
+    "a": {"category": "Secret Exposure", "message": "Possible api key detected"},
+    "b": {"category": "security", "message": "Hardcoded API key or secret string present in the source code."},
+    "collapse": true
+  },
+  {
     "name": "quality and performance",
     "a": {"category": "Performance", "message": "Nested loop O(n^2)"},
     "b": {"category": "Duplication", "message": "Duplicated block of code"},
