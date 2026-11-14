@@ -12,7 +12,9 @@ import time
 import logging
 import concurrent.futures
 
-from prism.ai_providers import get_model, API_TIMEOUT
+from prism.ai_providers import (
+    get_model, API_TIMEOUT, last_model_failure, sdk_install_hint,
+)
 from prism.ai_findings import parse_findings, verify_findings, _AGENT_PREFIX
 from prism.agents import Finding, Severity, Blocker
 from prism.langs import lang_for, strip_literals
@@ -305,9 +307,21 @@ def review_with_agent(system_prompt, file_path, content, agent_name,
     """
     model, provider, call_fn = get_model()
     if model is None:
-        logger.info("%s skipped: no API key for provider", agent_name)
-        return [_error_finding(agent_name, file_path,
-                               "no API key configured for provider")]
+        reason, failed_provider, _detail = last_model_failure()
+        name = failed_provider or provider
+        if reason == "no_sdk":
+            # The key is fine; the SDK is missing. Say so, and say which pip
+            # extra fixes it — "no API key" sent developers to re-enter a key
+            # that was already correct.
+            hint = sdk_install_hint(name) or "pip install 'prism-review[all]'"
+            message = "{} SDK not installed. Install it with: {}".format(
+                name, hint)
+        elif reason == "unknown_provider":
+            message = "unknown MODEL_PROVIDER '{}'".format(name)
+        else:
+            message = "no API key configured for provider"
+        logger.info("%s skipped: %s", agent_name, message)
+        return [_error_finding(agent_name, file_path, message)]
 
     has_diff = bool(diff and diff.strip())
     review_content = diff if has_diff else content

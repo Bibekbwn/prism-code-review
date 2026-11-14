@@ -2445,7 +2445,7 @@ class TestCliCommands:
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".env").write_text("")
         cs._cmd_key(argparse.Namespace(
-            action="set", provider="bogus", key="sk-real-key-1234567890"))
+action="set", provider="bogus", key="sk-real-key-1234567890"))
         assert "Invalid provider" in capsys.readouterr().out
 
     def test_key_set_no_key(self, tmp_path, monkeypatch, capsys):
@@ -2478,6 +2478,8 @@ class TestCliCommands:
     def test_key_status_no_env(self, tmp_path, monkeypatch, capsys):
         import prism.commands_setup as cs
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(cs, "_global_env_path",
+                            lambda: tmp_path / "no-global.env")
         cs._cmd_key(argparse.Namespace(
             action="status", provider=None, key=None))
-        assert "No .env file found" in capsys.readouterr().out
+        assert "No API keys configured" in capsys.readouterr().out

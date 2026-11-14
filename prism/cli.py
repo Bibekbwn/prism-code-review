@@ -185,6 +185,10 @@ def build_parser():
                          default=None,
                          help="AI provider (default: gemini for set)")
     key_cmd.add_argument("--key", help="API key value (required for set)")
+    key_cmd.add_argument("--global", dest="global_", action="store_true",
+                         help="Write the key to the install folder's .env "
+                              "(tool-wide, visible from every project) "
+                              "instead of the current project")
 
     return parser
 

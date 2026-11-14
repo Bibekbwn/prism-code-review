@@ -136,15 +136,32 @@ _KEY_ENV_VARS = {name: spec["key"] for name, spec in _PROVIDERS.items()}
 _VALID_PROVIDERS = list(_PROVIDERS)
 
 
+def _global_env_path():
+    """Return the install-folder .env used by `key set --global`.
+
+    This is the same location ``prism/__init__.py::load_env`` reads as a
+    fallback after the project-local .env, so a key written here is visible
+    from every directory without ``setx`` or per-project setup.
+    """
+    here = Path(prism.__file__).resolve().parent
+    return here.parent / ".env"
+
+
 def _cmd_key(args):
     """Manage API keys for AI providers.
 
     Only one provider key is kept at a time: setting a key for one provider
     removes the keys of the other providers so exactly one is active.
+
+    ``--global`` writes to the install folder's .env (tool-wide key, visible
+    from any project); without it the key goes to the current project's .env.
     """
-    env_path = Path(".env")
-    if not env_path.exists():
-        env_path = Path(".config/.env")
+    if getattr(args, "global_", False):
+        env_path = _global_env_path()
+    else:
+        env_path = Path(".env")
+        if not env_path.exists():
+            env_path = Path(".config/.env")
 
     if args.action == "set":
         _key_set(args, env_path)
@@ -252,30 +269,54 @@ def _key_delete(args, env_path):
 
 
 def _key_status(env_path):
-    """Print the configured provider keys (masked) and the active provider."""
-    if not env_path.exists():
-        print("No .env file found at {}".format(env_path.as_posix()))
+    """Print the configured provider keys (masked) and the active provider.
+
+    Shows both the project-local and the tool-wide (install-folder) .env so a
+    key set with ``--global`` is not reported as missing when run from a
+    project that has no .env of its own.
+    """
+    targets = [(env_path, "project")]
+    global_env = _global_env_path()
+    if global_env != env_path:
+        targets.append((global_env, "global"))
+    for path, label in targets:
+        print("({} key store: {})".format(
+            label, path.as_posix() if path.exists() else "(none)"))
+
+    found = False
+    for path, label in targets:
+        if not path.exists():
+            continue
+        lines = path.read_text().splitlines()
+        for line in lines:
+            stripped = line.strip()
+            for provider in _VALID_PROVIDERS:
+                env_var = _KEY_ENV_VARS[provider]
+                if stripped.startswith(env_var + "="):
+                    value = stripped.split("=", 1)[1].strip().strip('"')
+                    if value and not _is_placeholder_value(value):
+                        masked = (value[:4] + "..." + value[-4:]
+                                  if len(value) > 8 else "***")
+                        print("{}: {} [{}]".format(provider, masked, label))
+                        found = True
+
+    if not found:
+        print("No API keys configured in {}".format(
+            " or ".join(p.as_posix() for p, _ in targets)))
         print("Run: prism key set --provider gemini --key YOUR_KEY")
+        print("  (or once for every project: prism key set --global "
+              "--provider gemini --key YOUR_KEY)")
         return
 
-    lines = env_path.read_text().splitlines()
-    found = False
-    for line in lines:
-        stripped = line.strip()
-        for provider in _VALID_PROVIDERS:
-            env_var = _KEY_ENV_VARS[provider]
-            if stripped.startswith(env_var + "="):
-                value = stripped.split("=", 1)[1].strip().strip('"')
-                if value and not _is_placeholder_value(value):
-                    masked = (value[:4] + "..." + value[-4:]
-                              if len(value) > 8 else "***")
-                    print("{}: {}".format(provider, masked))
-                    found = True
-    if not found:
-        print("No API keys configured in {}".format(env_path.as_posix()))
-        print("Run: prism key set --provider gemini --key YOUR_KEY")
-    else:
+    # The active provider comes from the project .env first, then the global
+    # one, mirroring load_env's precedence.
+    for path, _label in targets:
+        if not path.exists():
+            continue
+        lines = path.read_text().splitlines()
         print("\nActive provider: {}".format(_get_active_provider(lines)))
+        return
+    print("\nActive provider: {}".format(_get_active_provider([])))
 
 
 def _is_placeholder_value(value):
@@ -354,6 +395,8 @@ def _cmd_init(args):
         print("Created {}".format(IGNORE_FILE))
 
     print("Next: prism key set --provider gemini --key YOUR_API_KEY")
+    print("  (or set once for every project: prism key set --global "
+          "--provider gemini --key YOUR_API_KEY)")
 
 
 def _cmd_install_hook(args):
@@ -579,7 +622,12 @@ def _cmd_doctor(args):
     env_path = Path(".env")
     if not env_path.exists():
         env_path = Path(".config/.env")
-    if env_path.exists():
+    global_env = _global_env_path()
+    if global_env.exists():
+        print("env file:  {} (project) + {} (global)".format(
+            env_path.as_posix() if env_path.exists() else "(none)",
+            global_env.as_posix()))
+    elif env_path.exists():
         print("env file:  {}".format(env_path.as_posix()))
     else:
         print("env file:  (none found - keys must come from the shell)")
@@ -631,14 +679,18 @@ def _cmd_doctor(args):
             mark, name, env_var, sdk,
             spec["default_model"]))
         if name == active_provider and has_key and not have_sdk:
-            problems.append("{} is active but its SDK is not installed "
-                            "(pip install 'prism[all]')".format(name))
+            from prism.ai_providers import sdk_install_hint
+            problems.append(
+                "{} is active but its SDK is not installed ({})".format(
+                    name, sdk_install_hint(name) or "pip install 'prism-review[all]'"))
 
     if not any(os.getenv(spec["key"]) for spec in _PROVIDERS.values()):
         print("")
         print("  no API key configured: AI agents are skipped; regex agents "
               "still run")
         print("  add one with: prism key set --provider gemini --key YOUR_KEY")
+        print("  (or once for every project: prism key set --global "
+              "--provider gemini --key YOUR_KEY)")
 
     print("")
     if problems:

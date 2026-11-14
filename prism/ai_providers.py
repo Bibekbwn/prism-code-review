@@ -56,6 +56,53 @@ _no_key_warned = False
 _circuit_failures = 0
 _circuit_open_until = 0.0
 
+# Why get_model() most recently returned None. A missing SDK and a missing key
+# both produce (None, None, None), so callers used to report "no API key" for
+# both — a developer who ran `pip install prism_review-2.0.0-py3-none-any.whl`
+# (no extras) was told to set a key that was already set. The reason is kept
+# here so the pipeline can name the actual problem.
+_MODEL_FAILURE = {"reason": None, "provider": None, "detail": ""}
+
+# Which pip extra supplies the SDK for each client shape. pyproject declares
+# gemini, claude and openai; the five OpenAI-compatible providers reuse the
+# `openai` client, so they share one extra.
+_EXTRA_BY_KIND = {"gemini": "gemini", "claude": "claude", "openai": "openai"}
+
+
+def _set_model_failure(reason, provider=None, detail=""):
+    """Record why get_model() failed so callers can explain it accurately."""
+    _MODEL_FAILURE["reason"] = reason
+    _MODEL_FAILURE["provider"] = provider
+    _MODEL_FAILURE["detail"] = detail
+
+
+def last_model_failure():
+    """Return (reason, provider, detail) for the most recent failure.
+
+    ``reason`` is one of "no_key", "no_sdk", "unknown_provider", or None when
+    the last call succeeded. ``provider`` is the resolved provider name, which
+    get_model() cannot return alongside the None triple, so callers can name
+    the provider in the message even though every value came back None.
+    """
+    return (_MODEL_FAILURE["reason"], _MODEL_FAILURE["provider"],
+            _MODEL_FAILURE["detail"])
+
+
+def sdk_extra(provider):
+    """Return the pip extra that installs the SDK for ``provider``, or None."""
+    spec = PROVIDERS.get(_resolve_provider(provider))
+    if spec is None:
+        return None
+    return _EXTRA_BY_KIND.get(spec["kind"])
+
+
+def sdk_install_hint(provider):
+    """Return an actionable install command for a provider's missing SDK."""
+    extra = sdk_extra(provider)
+    if not extra:
+        return None
+    return "pip install 'prism-review[{}]'".format(extra)
+
 # Provider catalogue. `kind` selects the client shape; `key`/`model` are the
 # env vars that hold the API key and model override. `base_url` (+ optional
 # `base_url_default`) targets an OpenAI-compatible endpoint, which is how the
@@ -174,12 +221,14 @@ def get_model(provider=None, model_name=None):
     spec = PROVIDERS.get(provider)
     if spec is None:
         _logger.error("Unknown MODEL_PROVIDER: %s", provider)
+        _set_model_failure("unknown_provider", provider, provider)
         return None, None, None
 
     model_name = model_name or os.getenv(spec["model"]) or spec["default_model"]
     api_key = os.getenv(spec["key"])
     if not api_key or _is_placeholder_key(api_key):
         _warn_no_key(provider, spec["key"])
+        _set_model_failure("no_key", provider, spec["key"])
         return None, None, None
 
     _ACTIVE_MODEL["provider"] = provider
@@ -193,6 +242,7 @@ def get_model(provider=None, model_name=None):
             return genai.GenerativeModel(model_name), provider, _call_fn
         except Exception as exc:
             _logger.error("Failed to initialize Gemini: %s", exc)
+            _set_model_failure("no_sdk", provider, str(exc))
             return None, None, None
 
     if kind == "claude":
@@ -201,6 +251,7 @@ def get_model(provider=None, model_name=None):
             return anthropic.Anthropic(api_key=api_key), provider, _call_claude
         except Exception as exc:
             _logger.error("Failed to initialize Claude: %s", exc)
+            _set_model_failure("no_sdk", provider, str(exc))
             return None, None, None
 
     # openai / OpenAI-compatible
@@ -214,6 +265,7 @@ def get_model(provider=None, model_name=None):
         return openai.OpenAI(**kwargs), provider, _call_openai
     except Exception as exc:
         _logger.error("Failed to initialize %s: %s", provider, exc)
+        _set_model_failure("no_sdk", provider, str(exc))
         return None, None, None
 
 

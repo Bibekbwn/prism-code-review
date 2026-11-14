@@ -39,8 +39,10 @@ Multi-agent code review pipeline that runs **before every commit**. 10 agents (4
 | **12 languages** | Python, JS/TS, Go, Rust, Java, C#, C, C++, Ruby, PHP, Kotlin, Swift — not Python with the rest ignored |
 | **Rich findings** | Every finding shows file, line, problem, suggestion text, and suggested code fix |
 | **Visual dashboard** | Self-contained HTML with severity charts, agent charts, filters, and per-finding detail |
-| **Multi-provider** | Switch between Gemini, Claude, and OpenAI with one command |
+| **Multi-provider** | 8 providers: Gemini, Claude, OpenAI, OpenRouter, Groq, Together, DeepSeek, Mistral |
 | **Command-only setup** | `prism key set` writes the `.env` for you — no file editing ever |
+| **Install once, run anywhere** | Ship one wheel; `prism key set --global` configures every project on the machine |
+| **Self-explaining failures** | A missing SDK says `pip install 'prism-review[gemini]'`, not "no API key" |
 | **Whole-project audit** | `prism scan <path>` reviews every file, not just the diff |
 | **Environment diagnostics** | `prism doctor` checks keys, SDKs and config before you wonder why AI is silent |
 | **Pre-commit hook** | Blocks commits with critical/high findings automatically |
@@ -153,6 +155,49 @@ There are only three SDKs to install. The five OpenAI-compatible providers
 (`openai`, `openrouter`, `groq`, `together`, `deepseek`, `mistral`) reuse the
 `openai` client against a different `base_url`, so no extra package is needed for them.
 
+### Hand the tool to a teammate (no `cd`, no venv on their side)
+
+Build the wheel once, attach it to a GitHub Release, and the teammate runs
+**one** command from any folder — no virtualenv, no source checkout, no build
+tools:
+
+```bash
+# On the machine that has the repo (you):
+py -m build          # -> dist/prism_review-2.0.0-py3-none-any.whl
+# then: GitHub -> Releases -> Draft a new release -> tag v2.0.0
+#       -> attach the .whl -> Publish
+
+# On the teammate's machine, once. The [all] extra installs every provider SDK
+# plus python-dotenv; without an extra the regex agents run but AI agents skip:
+pip install "https://github.com/<owner>/<repo>/releases/download/v2.0.0/prism_review-2.0.0-py3-none-any.whl[all]"
+
+# Set the API key once for every project (tool-wide):
+prism key set --global --provider gemini --key YOUR_GEMINI_API_KEY
+
+# Then in any project folder: git init, prism init, prism check ...
+```
+
+Use `[all]` when you do not control which provider each developer will use. For
+a team standardised on one provider, install only that extra — `[gemini]`,
+`[claude]`, or `[openai]` (the last also covers openrouter, groq, together,
+deepseek and mistral).
+
+When the SDK for the active provider is missing, PRISM names it and prints the
+fix instead of claiming the key is wrong:
+
+```
+gemini SDK not installed. Install it with: pip install 'prism-review[gemini]'
+```
+
+`prism key set --global` writes the key to the install folder's `.env` (next to
+site-packages), which `load_env` reads as a fallback after the project-local
+`.env` — so a project-level `prism key set` still overrides it. Without
+`--global` the key goes to the current project's `.env` as before.
+
+Three entry points, one dispatcher: the `prism` console script after a pip
+install, `py -m prism` from anywhere, and `py -m prism.cli` from a source
+checkout with nothing installed.
+
 ---
 
 ## Quick Start
@@ -176,7 +221,9 @@ prism key set --provider groq --key YOUR_GROQ_API_KEY
 The `prism key set` command writes `.env` for you and sets `MODEL_PROVIDER`.
 Switching provider removes the previous provider's key automatically, so
 exactly one key is active at a time. You never need to open `.env` or any file.
-See [API Key Management](#api-key-management) for the full provider table.
+Add `--global` to write the key to the install folder instead of the current
+project (set once, use from every project). See [API Key Management](#api-key-management)
+for the full provider table.
 
 ### 2. Check the setup
 
@@ -226,6 +273,9 @@ environment variable, or by running in CI (auto-detected via `CI` /
 ## Command Reference
 
 Every command available in PRISM, with all flags and options.
+
+All commands work three ways — `prism <cmd>`, `py -m prism <cmd>`, and
+`py -m prism.cli <cmd>` from a source checkout. The examples below use `prism`.
 
 ### Review Commands
 
@@ -351,14 +401,22 @@ prism key set --provider gemini --key YOUR_KEY
 prism key set --provider openai --key YOUR_KEY
 prism key set --provider claude --key YOUR_KEY
 prism key set --provider groq --key YOUR_KEY
+
+# Tool-wide: write the key once, use it from every project on the machine
+prism key set --global --provider gemini --key YOUR_KEY
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--provider {gemini,claude,openai,openrouter,groq,together,deepseek,mistral}` | Which provider's key to set (default: `gemini`) |
 | `--key KEY` | The API key value (required) |
+| `--global` | Write to the install folder's `.env` instead of the current project |
 
-**Behavior:** Writes the key to `.env`, sets `MODEL_PROVIDER` to the chosen provider, and **removes other providers' keys** (only one key is active at a time).
+**Behavior:** Writes the key to `.env`, sets `MODEL_PROVIDER` to the chosen
+provider, and **removes other providers' keys** (only one key is active at a
+time). With `--global` the target is the `.env` beside site-packages, which
+`load_env` reads after the project-local `.env` — so a project-level
+`prism key set` still wins.
 
 #### `prism key status` — Show current key status
 
@@ -366,7 +424,9 @@ prism key set --provider groq --key YOUR_KEY
 prism key status
 ```
 
-Shows the masked key (e.g. `AQ.A...lOXg`), the active provider, and prompts to run `prism key set` if no key is configured.
+Shows the masked key (e.g. `AQ.A...lOXg`), which store it came from
+(`[project]` or `[global]`), the active provider, and prompts to run
+`prism key set` if no key is configured.
 
 #### `prism key delete` — Delete all API keys
 
@@ -731,6 +791,17 @@ prism key set --provider gemini --key YOUR_KEY
 ```
 
 This writes `.env`, sets `MODEL_PROVIDER`, and removes other providers' keys (only one active at a time).
+
+Add `--global` to write the key to the install folder's `.env` instead of the
+current project's:
+
+```bash
+prism key set --global --provider gemini --key YOUR_KEY
+```
+
+The global key is read as a fallback after the project-local `.env` (see
+[Hand the tool to a teammate](#hand-the-tool-to-a-teammate-no-cd-no-venv-on-their-side)),
+so a project-level `prism key set` still overrides it.
 
 ### Check current key
 
@@ -1152,7 +1223,8 @@ prism policy
 ```
 hackathon/
 ├── prism/                          # Main package
-│   ├── __init__.py
+│   ├── __init__.py                   # .env loading (project, then install-folder fallback)
+│   ├── __main__.py                   # `py -m prism` entry point
 │   ├── cli.py                      # CLI entry point (argparse + dispatch)
 │   ├── cli_commands.py             # check / check-staged / check-diff + self-tests
 │   ├── cli_config.py               # Config loading, git helpers, deviation policy
@@ -1188,12 +1260,13 @@ hackathon/
 │   ├── token_usage.py              # Per-review token ledger
 │   ├── dashboard.html              # Dashboard HTML template
 │   └── pre-commit-hook.sh          # Git hook script template
-├── tests/                          # 388 unit + integration tests
+├── tests/                          # 404 unit + integration tests
 │   ├── conftest.py
 │   ├── test_autofix_languages.py   # Per-language fixes and structure measurement
 │   ├── test_call_graph.py
 │   ├── test_cli_handlers.py
 │   ├── test_coverage_paths.py
+│   ├── test_global_key.py          # `key set --global` write target + precedence
 │   ├── test_golden_corpus.py
 │   ├── test_integration.py
 │   ├── test_languages.py           # Every declared language is reviewed
@@ -1209,13 +1282,15 @@ hackathon/
 │       ├── ci-cd.yml               # Test CI (Ubuntu + Windows, Python 3.11–3.13)
 │       └── prism-review.yml        # Automated PR review (advisory)
 ├── .env.example                    # Environment variable template
-├── .gitignore
+├── .gitignore                      # .env, build/, dist/, caches, reports
 ├── .prismignore                    # Files pre-commit review skips (see `prism ignore`)
 ├── prism.json                      # PRISM configuration
-├── pyproject.toml                  # Package definition, deps, pytest config
-├── setup.py                        # Installable package definition
+├── pyproject.toml                  # Package definition, deps, extras, scripts, pytest config
 └── README.md
 ```
+
+`dist/` and `build/` are git-ignored: a release is a wheel attached to a GitHub
+Release, not a file committed to the repo.
 
 ---
 
@@ -1251,4 +1326,24 @@ The suite covers:
 - Regression tests for cache blocking, JSON purity, auto-fix imports,
   dotenv secrets, AI dedup, binary skipping, quality gates, `--fast`, and
   Windows report-ID collisions
+- Provider failure attribution: a missing key and a missing SDK are reported
+  differently, and every provider maps to the right pip extra
+- Tool-wide key storage: `key set --global` writes to the install folder and a
+  project-level key still overrides it
 - 13 built-in self-tests (skeleton, chunking, tiers, verification, import graph, agent registration)
+
+---
+
+## Releasing
+
+```bash
+py -m build        # -> dist/prism_review-<version>-py3-none-any.whl
+```
+
+Then attach the wheel to a GitHub Release (Releases → Draft a new release → tag
+`v<version>` → attach the `.whl` → Publish). `dist/` is git-ignored, so the
+wheel is never committed; the Release asset URL is what developers install from.
+
+The wheel declares no hard dependencies — providers are opt-in extras
+(`[gemini]`, `[claude]`, `[openai]`, `[all]`, `[dev]`), so a base install stays
+small and the regex agents work with no SDK and no key at all.
