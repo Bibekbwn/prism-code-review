@@ -694,6 +694,7 @@ prism check app.py                   # Everything else still runs
 
 ```bash
 prism version
+prism --version    # same output; handy in scripts and pipelines
 ```
 
 #### `prism help` — Show all commands
@@ -1262,7 +1263,7 @@ hackathon/
 │   ├── token_usage.py              # Per-review token ledger
 │   ├── dashboard.html              # Dashboard HTML template
 │   └── pre-commit-hook.sh          # Git hook script template
-├── tests/                          # 404 unit + integration tests
+├── tests/                          # 406 unit + integration tests
 │   ├── conftest.py
 │   ├── test_autofix_languages.py   # Per-language fixes and structure measurement
 │   ├── test_call_graph.py

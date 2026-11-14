@@ -839,6 +839,31 @@ class TestCliErrorSurfaces:
         assert proc.returncode == 1
 
 
+class TestVersionFlag:
+    def test_version_flag_matches_version_command(self, tmp_path):
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(Path(__file__).parent.parent)
+        flag = subprocess.run(
+            [sys.executable, "-m", "prism.cli", "--version"],
+            cwd=str(tmp_path), capture_output=True, text=True, env=env)
+        command = subprocess.run(
+            [sys.executable, "-m", "prism.cli", "version"],
+            cwd=str(tmp_path), capture_output=True, text=True, env=env)
+        assert flag.returncode == 0
+        assert command.returncode == 0
+        assert flag.stdout == command.stdout
+        assert "PRISM v" in flag.stdout
+
+    def test_version_flag_does_not_require_a_command(self, tmp_path):
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(Path(__file__).parent.parent)
+        proc = subprocess.run(
+            [sys.executable, "-m", "prism.cli", "--version"],
+            cwd=str(tmp_path), capture_output=True, text=True, env=env)
+        assert proc.returncode == 0
+        assert "USAGE" not in proc.stdout
+
+
 class TestEnvLoading:
     def test_load_env_reads_cwd_dotenv(self, tmp_path, monkeypatch):
         import prism

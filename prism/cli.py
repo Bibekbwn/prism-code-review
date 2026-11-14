@@ -58,6 +58,10 @@ def build_parser():
         "--effort", choices=["lite", "balanced", "max"],
         default="balanced", help="AI review effort level",
     )
+    parser.add_argument(
+        "--version", action="store_true",
+        help="Show the PRISM version and exit (same as `prism version`)",
+    )
     sub = parser.add_subparsers(dest="command")
 
     check = sub.add_parser("check", help="Review a file")
@@ -228,6 +232,10 @@ _COMMANDS = {
 def main():
     parser = build_parser()
     args = parser.parse_args()
+
+    if getattr(args, "version", False):
+        _cmd_version(args)
+        return
 
     handler = _COMMANDS.get(args.command)
     if handler is None:
