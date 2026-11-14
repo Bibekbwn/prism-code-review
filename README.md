@@ -121,7 +121,7 @@ Binary files are skipped outright rather than scanned as text.
 
 ### Requirements
 - Python 3.9+
-- An API key for Gemini (default), Claude, or OpenAI
+- An API key for any one of the [8 supported providers](#api-key-management). The regex agents need no key at all.
 
 ### Install
 
@@ -129,18 +129,29 @@ Binary files are skipped outright rather than scanned as text.
 # Clone the repo
 git clone <repo-url>
 
-# Install PRISM (Gemini only — default)
+# Install PRISM (no AI SDK — regex agents still work)
 pip install -e .
 
-# For Claude support:
+# Gemini (default provider):
+pip install -e .[gemini]
+
+# Claude:
 pip install -e .[claude]
 
-# For OpenAI support:
+# OpenAI — this one extra also covers OpenRouter, Groq, Together,
+# DeepSeek and Mistral, which are OpenAI-compatible endpoints:
 pip install -e .[openai]
 
-# For all providers:
+# All SDKs at once:
 pip install -e .[all]
+
+# Test and lint dependencies:
+pip install -e ".[dev]"
 ```
+
+There are only three SDKs to install. The five OpenAI-compatible providers
+(`openai`, `openrouter`, `groq`, `together`, `deepseek`, `mistral`) reuse the
+`openai` client against a different `base_url`, so no extra package is needed for them.
 
 ---
 
@@ -153,15 +164,19 @@ pip install -e .[all]
 prism key set --provider gemini --key YOUR_GEMINI_API_KEY
 
 # Or switch to Claude
-prism key set --provider claude --key YOUR_ANTHROPIC_API_KEY ( not for this version)
+prism key set --provider claude --key YOUR_ANTHROPIC_API_KEY 
 
 # Or switch to OpenAI
 prism key set --provider openai --key YOUR_OPENAI_API_KEY 
+
+# Any of the other five also work: openrouter, groq, together, deepseek, mistral
+prism key set --provider groq --key YOUR_GROQ_API_KEY
 ```
 
 The `prism key set` command writes `.env` for you and sets `MODEL_PROVIDER`.
 Switching provider removes the previous provider's key automatically, so
 exactly one key is active at a time. You never need to open `.env` or any file.
+See [API Key Management](#api-key-management) for the full provider table.
 
 ### 2. Check the setup
 
@@ -335,11 +350,12 @@ review-only, no commit gate.` and always exits `0`, so a scan never breaks a pip
 prism key set --provider gemini --key YOUR_KEY
 prism key set --provider openai --key YOUR_KEY
 prism key set --provider claude --key YOUR_KEY
+prism key set --provider groq --key YOUR_KEY
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--provider {gemini,openai,claude}` | Which provider's key to set (default: `gemini`) |
+| `--provider {gemini,claude,openai,openrouter,groq,together,deepseek,mistral}` | Which provider's key to set (default: `gemini`) |
 | `--key KEY` | The API key value (required) |
 
 **Behavior:** Writes the key to `.env`, sets `MODEL_PROVIDER` to the chosen provider, and **removes other providers' keys** (only one key is active at a time).
@@ -675,13 +691,38 @@ prism suppressed
 
 ## API Key Management
 
-PRISM supports three AI providers. You switch between them with one command:
+PRISM supports **8 AI providers**. You switch between them with one command, and only
+one key is active at a time.
 
-| Provider | Env Var | Install Command | Model |
-|----------|---------|-----------------|-------|
-| **Gemini** (default) | `GEMINI_API_KEY` | `pip install -e .` | `gemini-3.5-flash-lite` |
-| **Claude** | `ANTHROPIC_API_KEY` | `pip install -e .[claude]` | `claude-3-5-sonnet-20241022` |
-| **OpenAI** | `OPENAI_API_KEY` | `pip install -e .[openai]` | `gpt-4o` |
+| Provider | Env var | Default model | Model override | Install |
+|----------|---------|---------------|----------------|---------|
+| **Gemini** (default) | `GEMINI_API_KEY` | `gemini-3.5-flash-lite` | `GEMINI_MODEL` | `pip install -e .[gemini]` |
+| **Claude** | `ANTHROPIC_API_KEY` | `claude-3-5-sonnet-20241022` | `CLAUDE_MODEL` | `pip install -e .[claude]` |
+| **OpenAI** | `OPENAI_API_KEY` | `gpt-4o` | `OPENAI_MODEL` | `pip install -e .[openai]` |
+| **OpenRouter** | `OPENROUTER_API_KEY` | `openai/gpt-4o-mini` | `OPENROUTER_MODEL` | `pip install -e .[openai]` |
+| **Groq** | `GROQ_API_KEY` | `llama-3.3-70b-versatile` | `GROQ_MODEL` | `pip install -e .[openai]` |
+| **Together** | `TOGETHER_API_KEY` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | `TOGETHER_MODEL` | `pip install -e .[openai]` |
+| **DeepSeek** | `DEEPSEEK_API_KEY` | `deepseek-chat` | `DEEPSEEK_MODEL` | `pip install -e .[openai]` |
+| **Mistral** | `MISTRAL_API_KEY` | `mistral-large-latest` | `MISTRAL_MODEL` | `pip install -e .[openai]` |
+
+The last five are OpenAI-compatible endpoints, so they reuse the `openai` client and
+need no extra package — that is why the install column repeats `.[openai]`.
+
+Each provider also accepts a base-URL override (`OPENAI_BASE_URL`, `OPENROUTER_BASE_URL`,
+`GROQ_BASE_URL`, `TOGETHER_BASE_URL`, `DEEPSEEK_BASE_URL`, `MISTRAL_BASE_URL`) for a proxy
+or a self-hosted gateway. The defaults are `https://openrouter.ai/api/v1`,
+`https://api.groq.com/openai/v1`, `https://api.together.xyz/v1`,
+`https://api.deepseek.com` and `https://api.mistral.ai/v1`.
+
+### Aliases
+
+These names are accepted wherever a provider is named, and resolve to the canonical one:
+
+| Alias | Resolves to |
+|-------|-------------|
+| `anthropic` | `claude` |
+| `google` | `gemini` |
+| `gpt`, `open-ai` | `openai` |
 
 ### Set a key
 
@@ -710,6 +751,33 @@ Active provider: gemini
 prism key delete
 ```
 
+### Diagnose the setup
+
+```bash
+prism doctor
+```
+
+`doctor` lists every provider with three checks — key present, SDK installed, and whether
+`MODEL_PROVIDER` names a provider that exists — so a missing key or an uninstalled SDK is
+visible before you wonder why the AI agents are silent.
+
+### Tuning the provider calls
+
+Optional environment variables, all with safe defaults:
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `PRISM_TIMEOUT` | tier-based (30s / 45s / 60s / 90s, capped at 120s) | Overrides the per-call timeout, in seconds |
+| `PRISM_API_TIMEOUT` | `30` | Base timeout in seconds, multiplied by the file-size tier (see `PRISM_TIMEOUT`); also the per-attempt wall-clock cap, so a provider that accepts the socket but never answers cannot stall the CLI |
+| `PRISM_MAX_RETRIES` | `2` | Retries per call after the first attempt |
+| `PRISM_RETRY_BASE_DELAY` | `0.2` | Initial backoff between retries, in seconds |
+| `PRISM_RETRY_MAX_DELAY` | `1.0` | Cap on a single backoff sleep |
+| `PRISM_RETRY_BUDGET` | `5` | Total seconds a call may spend sleeping, so a bad provider cannot stall the CLI |
+| `PRISM_CIRCUIT_THRESHOLD` | `5` | Consecutive failures before the circuit opens and calls fail fast |
+| `PRISM_CIRCUIT_COOLDOWN` | `60` | Seconds the circuit stays open before retrying |
+| `PRISM_REPO_PATH` | current directory | Root used to build the import graph for cross-file context |
+| `PRISM_BASE` | `origin/main` | Default base ref for `check-diff` when `--base` is not given |
+
 ### No key configured?
 
 If no key is set, AI agents are disabled and PRISM logs a warning. The deterministic regex agents still run with `--effort lite`. Run `prism key set` to enable AI agents.
@@ -736,6 +804,7 @@ The main configuration file. Ships with the repo — never overwritten by `prism
     "min_coverage": 0
   },
   "confidence_threshold": 0.7,
+  "mode": "all",
   "policy": {
     "headers": false
   },
@@ -749,10 +818,12 @@ The main configuration file. Ships with the repo — never overwritten by `prism
 |-----|-------------|
 | `agents` | List of enabled agent names (or a `{name: bool}` map). `prism agents --disable <name>` toggles one off |
 | `block_on` | Severity levels that block a commit (default: critical and high) |
+| `mode` | `all` / `regex` / `none` — which agent families run (`prism mode <mode>` writes it) |
 | `quality_gates.max_complexity` | Max cyclomatic complexity before blocking (high/critical only) |
 | `quality_gates.max_file_length` | Max lines per file before blocking (high/critical only) |
 | `quality_gates.min_coverage` | Minimum test coverage percentage (`0` disables the gate) |
 | `confidence_threshold` | Minimum confidence (0.0–1.0) for a finding to be reported |
+| `ignore` | Extra paths and globs to skip, in addition to `.prismignore` |
 | `policy.headers` | Require copyright/SPDX headers (`POL-101`, `POL-206`). Off by default |
 | `policy.banned_console` | Flag `console.log` in JS/TS. Off by default |
 | `policy.check_print` | Flag `print()` outside CLI entry points. Off by default |
