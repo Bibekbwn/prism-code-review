@@ -43,6 +43,18 @@ jobs:
           python -m prism.cli help
           python -m prism.cli key status
 
+      # `check` is the command developers actually run, and it is the one that
+      # touches the filesystem, reads the ignore list and writes a report. The
+      # smoke test above only proves the module imports, so a Windows-only
+      # failure in the review path would not be caught until someone ran it by
+      # hand. `lite` keeps it deterministic (no API key needed) and the file is
+      # clean, so the command is expected to exit 0. RUNNER_TEMP is set on both
+      # runners, and Python writes the file so the shell does not have to.
+      - name: Verify check command works
+        run: |
+          python -c "import os; open(os.path.join(os.environ['RUNNER_TEMP'], 'prism_smoke.py'), 'w').write('def add(a, b):\n    return a + b\n')"
+          python -m prism.cli check "$RUNNER_TEMP/prism_smoke.py" --effort lite --no-dashboard --json
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -54,10 +66,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install linters
-        run: pip install ruff
+      - name: Install linter
+        run: pip install pyflakes
 
-      - name: Check syntax (ruff)
-        run: ruff check prism/ --select E9,F63,F7,F82 --statistics || true
-        # F-rules catch undefined names, real syntax errors.
-        # Style warnings are non-blocking for this project.
+      # pyflakes is the declared dev dependency, so CI checks the same thing a
+      # developer gets locally. It reports undefined names, unused imports and
+      # real syntax errors, and it is blocking: a lint failure means the package
+      # does not import cleanly.
+      - name: Lint (pyflakes)
+        run: pyflakes prism/ tests/
