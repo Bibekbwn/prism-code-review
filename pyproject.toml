@@ -46,8 +46,8 @@ dev = [
 prism = "prism.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/prism-review/prism"
-Issues = "https://github.com/prism-review/prism/issues"
+Homepage = "https://github.com/Bibekbwn/prism-code-review"
+Issues = "https://github.com/Bibekbwn/prism-code-review/issues"
 
 [tool.setuptools.packages.find]
 include = ["prism*"]
