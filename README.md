@@ -777,6 +777,7 @@ Optional environment variables, all with safe defaults:
 | `PRISM_CIRCUIT_COOLDOWN` | `60` | Seconds the circuit stays open before retrying |
 | `PRISM_REPO_PATH` | current directory | Root used to build the import graph for cross-file context |
 | `PRISM_BASE` | `origin/main` | Default base ref for `check-diff` when `--base` is not given |
+| `PRISM_MAX_CONTENT_CHARS` | `16000` | Max characters of file content sent in one call. A cost control — the skeleton and import graph still describe the whole file |
 
 ### No key configured?
 
@@ -1187,7 +1188,7 @@ hackathon/
 │   ├── token_usage.py              # Per-review token ledger
 │   ├── dashboard.html              # Dashboard HTML template
 │   └── pre-commit-hook.sh          # Git hook script template
-├── tests/                          # 384 unit + integration tests
+├── tests/                          # 388 unit + integration tests
 │   ├── conftest.py
 │   ├── test_autofix_languages.py   # Per-language fixes and structure measurement
 │   ├── test_call_graph.py

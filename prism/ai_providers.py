@@ -17,12 +17,27 @@ import concurrent.futures
 
 from prism import token_usage
 
+def _int_env(name, default):
+    """Read an int env var, falling back to the default when unset or not a number.
+
+    A typo in a tuning variable must not take the whole CLI down at import time.
+    """
+    try:
+        return int(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return int(default)
+
+
 # Per-attempt wall-clock cap. A provider that accepts the socket but never
 # answers (or an HTTP client that ignores its timeout) must not stall the CLI
 # for minutes: every attempt is abandoned after this many seconds.
-API_TIMEOUT = int(os.getenv("PRISM_API_TIMEOUT", "30"))
-MAX_RETRIES = int(os.getenv("PRISM_MAX_RETRIES", "2"))
-MAX_CONTENT_CHARS = 16000
+API_TIMEOUT = _int_env("PRISM_API_TIMEOUT", 30)
+MAX_RETRIES = _int_env("PRISM_MAX_RETRIES", 2)
+
+# How much file content is sent to the model in one call. Truncation is a cost
+# control, not a correctness limit: the skeleton and the import graph carry the
+# structure, so a large file still gets reviewed.
+MAX_CONTENT_CHARS = _int_env("PRISM_MAX_CONTENT_CHARS", 16000)
 
 # Retry pacing: exponential backoff with jitter, capped by a total budget so a
 # bad provider cannot stall the CLI. Defaults keep a single flaky call well
@@ -33,7 +48,7 @@ RETRY_BUDGET = float(os.getenv("PRISM_RETRY_BUDGET", "5"))
 
 # Simple circuit breaker: after repeated failures, fail fast for a cooldown
 # instead of making every agent wait through the full retry ladder.
-CIRCUIT_THRESHOLD = int(os.getenv("PRISM_CIRCUIT_THRESHOLD", "5"))
+CIRCUIT_THRESHOLD = _int_env("PRISM_CIRCUIT_THRESHOLD", 5)
 CIRCUIT_COOLDOWN = float(os.getenv("PRISM_CIRCUIT_COOLDOWN", "60"))
 
 _logger = logging.getLogger(__name__)

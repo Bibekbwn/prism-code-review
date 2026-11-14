@@ -113,3 +113,23 @@ class TestProviderSelection:
         monkeypatch.setenv("GEMINI_API_KEY", "your-api-key-here")
         model, provider, call = ap.get_model(provider="gemini")
         assert (model, provider, call) == (None, None, None)
+
+class TestIntEnv:
+    """Tuning variables are read at import time; a typo must not break the CLI."""
+
+    def test_parses_an_integer(self, monkeypatch):
+        monkeypatch.setenv("PRISM_TEST_INT", "42")
+        assert ap._int_env("PRISM_TEST_INT", 7) == 42
+
+    def test_falls_back_when_unset(self, monkeypatch):
+        monkeypatch.delenv("PRISM_TEST_INT", raising=False)
+        assert ap._int_env("PRISM_TEST_INT", 7) == 7
+
+    def test_falls_back_on_a_non_number(self, monkeypatch):
+        monkeypatch.setenv("PRISM_TEST_INT", "not-a-number")
+        assert ap._int_env("PRISM_TEST_INT", 7) == 7
+
+    def test_max_content_chars_is_configurable(self, monkeypatch):
+        # .env.example documents PRISM_MAX_CONTENT_CHARS; it must actually be read.
+        monkeypatch.setenv("PRISM_MAX_CONTENT_CHARS", "1234")
+        assert ap._int_env("PRISM_MAX_CONTENT_CHARS", 16000) == 1234
