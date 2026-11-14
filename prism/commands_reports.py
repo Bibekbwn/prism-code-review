@@ -12,6 +12,8 @@ from prism.codebase_cache import get_changed_files, get_cache_stats, clear_cache
 from prism.feedback import load_feedback, suppress_summary
 from prism.reports import load_report, delete_report, clear_reports, get_report_summary
 
+VALID_SEVERITIES = ("critical", "high", "medium", "low")
+
 
 def _cmd_reports(args):
     print(get_report_summary())
@@ -127,8 +129,13 @@ def open_dashboard(url):
 
 
 def _cmd_dashboard(args):
-    """Generate the dashboard and open it in the browser."""
-    build_dashboard(open_browser=True)
+    """Generate the dashboard and open it in the browser.
+
+    A missing template is a packaging failure, not an empty report: exit
+    non-zero so a script running `prism dashboard` does not read it as success.
+    """
+    if not build_dashboard(open_browser=True):
+        sys.exit(1)
 
 
 def _cmd_stats(args):
@@ -159,6 +166,24 @@ def _set_config_value(config, dotted, value):
     node[parts[-1]] = value
 
 
+def _validate_config_value(key, value):
+    """Return an error message for a value that would silently change behaviour.
+
+    ``block_on`` drives the quality gate. Written as a bare string it still
+    loads, but the membership test becomes a substring test, so every commit
+    passes while the config looks correct. Refuse the write instead.
+    """
+    if key == "block_on":
+        if not isinstance(value, list):
+            return 'block_on must be a list, e.g. ["critical", "high"]'
+        unknown = [v for v in value
+                   if not isinstance(v, str) or v.lower() not in VALID_SEVERITIES]
+        if unknown:
+            return "block_on has unknown severity value(s): {} (valid: {})".format(
+                ", ".join(repr(v) for v in unknown), ", ".join(VALID_SEVERITIES))
+    return None
+
+
 def _cmd_config(args):
     config = load_config()
     if getattr(args, "set", None):
@@ -167,6 +192,11 @@ def _cmd_config(args):
             value = json.loads(value)
         except json.JSONDecodeError:
             pass
+        problem = _validate_config_value(key, value)
+        if problem:
+            print("Invalid value for {}: {}".format(key, problem), file=sys.stderr)
+            print("No changes written.", file=sys.stderr)
+            sys.exit(1)
         _set_config_value(config, key, value)
         # Write back to the file we read from, not always prism.json.
         config_path = get_config_path()

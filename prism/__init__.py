@@ -8,7 +8,7 @@ before code is pushed to GitHub. Each agent checks a specific concern.
 import os
 from pathlib import Path
 
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 
 _ENV_LOADED = False
 

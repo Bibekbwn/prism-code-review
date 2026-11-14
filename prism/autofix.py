@@ -12,6 +12,7 @@ from typing import List, Optional, Tuple
 from prism.agents import Finding
 from prism.langs import lang_for
 from prism.logging_config import logger
+from prism.reports import looks_like_secret
 
 # A declaration is a name preceded by modifiers, a type, or a qualifier
 # (`const token`, `String apiKey`, `self.password`). Taking the name from the
@@ -22,6 +23,13 @@ _SECRET_ASSIGN = re.compile(
     r'(?P<name>\$?[A-Za-z_]\w*)'
     r'(?P<op>\s*(?::=|(?<![=!<>:])=(?!=)|:(?!=))\s*)'
     r'(?P<q>["\'])(?P<lit>.*?)(?P=q)(?P<tail>.*)$')
+
+# The unquoted counterpart: `PASSWORD=hunter2`, `export TOKEN=abc`,
+# `#define API_KEY abc123`. Kept separate from _SECRET_ASSIGN so the value is
+# masked rather than copied into a suggested fix.
+_UNQUOTED_ASSIGN = re.compile(
+    r'^(?P<head>\s*(?:export\s+|#define\s+)?[\w$.\[\]]+\s*'
+    r'(?::=|(?<![=!<>:])=(?!=)|:(?!=))\s*)(?P<val>.*)$')
 
 
 def _is_valid_python(source: str) -> bool:
@@ -143,7 +151,7 @@ def _remove_line(lines: list, idx: int) -> str:
     return ""
 
 
-def _replace_secret(line: str, finding: Finding, spec=None) -> str:
+def _replace_secret(line: str, finding: Finding, spec=None) -> Optional[str]:
     """Replace a hardcoded secret with a read from the environment.
 
     The declaration is left as it is and only the literal is swapped, so
@@ -151,15 +159,43 @@ def _replace_secret(line: str, finding: Finding, spec=None) -> str:
     becomes the language's own lookup (``os.Getenv("APIKEY")`` in Go,
     ``process.env.APIKEY`` in JS). Emitting ``os.getenv`` into a Go file would
     not compile, which is worse than offering no fix at all.
+
+    Returns None when the line cannot be rewritten safely: the suggestion is
+    rendered in the dashboard and the JSON report, so echoing the original line
+    back would copy the live credential into a file that is meant to be shared.
     """
     env_read = spec.env_read if spec is not None else 'os.getenv("{name}")'
     match = _SECRET_ASSIGN.match(line)
     if not match:
+        # Not a quoted declaration. Three cases, and only one of them is safe
+        # to echo back:
+        #   - an unquoted assignment (SECU-123/125) -> mask the value
+        #   - a credential embedded in some other expression -> offer no fix
+        #   - no credential at all (a comparison, a call) -> the old no-op
+        if _UNQUOTED_ASSIGN.match(line):
+            return _mask_secret_value(line)
+        if looks_like_secret(line):
+            return None
         return line
     # PHP declares `$key`; the sigil is not part of the variable's name.
     name = re.sub(r"[^A-Za-z0-9]", "_", match.group("name").lstrip("$")).upper()
     return (match.group("head") + match.group("name") + match.group("op")
             + env_read.format(name=name) + match.group("tail"))
+
+
+def _mask_secret_value(line: str) -> Optional[str]:
+    """Mask the value of an unquoted secret assignment.
+
+    SECU-123/125 match dotenv-style (``PASSWORD=hunter2``) and shell-export
+    (``export TOKEN=abc``) secrets, which have no quoted literal for
+    :data:`_SECRET_ASSIGN` to swap. Returning the line unchanged put the live
+    credential into the report, and the dashboard renders ``suggested_code``
+    verbatim. Masking keeps the fix useful without copying the secret.
+    """
+    match = _UNQUOTED_ASSIGN.match(line)
+    if not match:
+        return None
+    return match.group("head") + '"***REDACTED***"'
 
 
 def _remove_dangerous_call(line: str, name: str, spec=None) -> str:

@@ -176,7 +176,7 @@ parse extras that are appended directly onto a wheel URL, so `...whl[all]`
 returns a 404:
 
 ```bash
-pip install "prism-code-review[all] @ https://github.com/Bibekbwn/prism-code-review/releases/download/v2.0.0/prism_code_review-2.0.0-py3-none-any.whl"
+pip install "prism-code-review[all] @ https://github.com/Bibekbwn/prism-code-review/releases/download/v2.0.1/prism_code_review-2.0.1-py3-none-any.whl"
 ```
 
 Both routes give the same package. To cut a new release, see
@@ -1332,6 +1332,10 @@ The suite covers:
 - Regression tests for cache blocking, JSON purity, auto-fix imports,
   dotenv secrets, AI dedup, binary skipping, quality gates, `--fast`, and
   Windows report-ID collisions
+- Credential hygiene: an unquoted secret in an auto-fix is masked rather than
+  echoed, and no finding value reaches a saved report or the dashboard
+- Config validation: `block_on` rejects a bare string and unknown severities
+  instead of silently disabling the quality gate
 - Provider failure attribution: a missing key and a missing SDK are reported
   differently, and every provider maps to the right pip extra
 - Tool-wide key storage: `key set --global` writes to the install folder and a
@@ -1341,6 +1345,9 @@ The suite covers:
 ---
 
 ## Releasing
+
+Bump the version in **both** places — `pyproject.toml` and
+`prism/__init__.py` (`__version__`) — then:
 
 ```bash
 py -m build              # -> dist/prism_code_review-<version>-*.whl and .tar.gz
@@ -1356,6 +1363,10 @@ py -m twine upload dist/*
 # GitHub (the wheel-only fallback for machines without PyPI access)
 #Releases -> Draft a new release -> tag v<version> -> attach the .whl -> Publish
 ```
+
+A published version is immutable — PyPI rejects a re-upload of the same number,
+so any fix after a release needs a new version even when the change is a
+one-line correction.
 
 `dist/` is git-ignored, so the wheel is never committed — the Release asset and
 the PyPI project are what developers install from.

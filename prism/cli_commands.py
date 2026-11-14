@@ -586,6 +586,8 @@ def _cmd_check_diff(args):
 
     base = getattr(args, "base", None) or os.getenv("PRISM_BASE") or "origin/main"
 
+    requested_base = base
+
     def _ref_ok(ref):
         try:
             return subprocess.run(
@@ -603,6 +605,10 @@ def _cmd_check_diff(args):
         else:
             print("Cannot resolve base ref '{}'".format(base), file=sys.stderr)
             sys.exit(2)
+        # A typo'd branch used to fall through to HEAD~1 in silence, so the
+        # review looked like it covered the requested ref. Say which one won.
+        _status("Base ref '{}' not found - reviewing against '{}' instead".format(
+            requested_base, base))
 
     files = [f for f in get_diff_files(base) if Path(f).exists()]
     # check-staged honours .prismignore (get_staged_files applies it); check-diff

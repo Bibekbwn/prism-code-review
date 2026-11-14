@@ -2508,3 +2508,88 @@ action="set", provider="bogus", key="sk-real-key-1234567890"))
         cs._cmd_key(argparse.Namespace(
             action="status", provider=None, key=None))
         assert "No API keys configured" in capsys.readouterr().out
+
+class TestSecretNeverEchoed:
+    """A suggested fix is rendered in the dashboard and the JSON report.
+
+    Returning the offending line verbatim copied the live credential into a
+    file that is meant to be shared, so an unquoted assignment must be masked
+    and an embedded credential must produce no fix at all.
+    """
+
+    def test_unquoted_assignment_is_masked(self):
+        from prism.autofix import generate_fix
+        line = "PASSWORD=hunter2"
+        fix = generate_fix(_finding(rule_id="SECU-103"), line)
+        assert "hunter2" not in (fix or "")
+        assert "REDACTED" in (fix or "")
+
+    def test_shell_export_is_masked(self):
+        from prism.autofix import generate_fix
+        line = "export SECRET_KEY=abcdef1234567890"
+        fix = generate_fix(_finding(rule_id="SECU-125"), line)
+        assert "abcdef1234567890" not in (fix or "")
+
+    def test_embedded_credential_gets_no_fix(self):
+        from prism.autofix import generate_fix
+        line = '    login(user, "sk-live-abcdefghij123456")'
+        assert generate_fix(_finding(), line) is None
+
+    def test_non_declaration_line_is_untouched(self):
+        from prism.autofix import generate_fix
+        line = '  if (token == "abc") {'
+        assert generate_fix(_finding(), line) == line
+
+    def test_report_redacts_prefixed_credentials(self):
+        from prism.reports import redact_secrets
+        text = 'key = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"'
+        assert "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345" not in redact_secrets(text)
+        assert "REDACTED" in redact_secrets(text)
+
+
+class TestBlockOnValidation:
+    """block_on drives the quality gate; a bare string silently disables it."""
+
+    def _set(self, tmp_path, monkeypatch, value):
+        import prism.commands_reports as cr
+        import prism.cli_config as cfg
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "prism.json").write_text('{"block_on": ["critical", "high"]}')
+        monkeypatch.setattr(cfg, "get_config_path",
+                            lambda: str(tmp_path / "prism.json"))
+        monkeypatch.setattr(cr, "get_config_path",
+                            lambda: str(tmp_path / "prism.json"))
+        cr._cmd_config(argparse.Namespace(set=["block_on", value],
+                                          get=None))
+        return json.loads((tmp_path / "prism.json").read_text())
+
+    def test_bare_string_is_rejected(self, tmp_path, monkeypatch):
+        with pytest.raises(SystemExit) as exc:
+            self._set(tmp_path, monkeypatch, "not-a-list")
+        assert exc.value.code == 1
+        assert json.loads((tmp_path / "prism.json").read_text())["block_on"] == [
+            "critical", "high"]
+
+    def test_unknown_severity_is_rejected(self, tmp_path, monkeypatch):
+        with pytest.raises(SystemExit) as exc:
+            self._set(tmp_path, monkeypatch, '["critical", "bogus"]')
+        assert exc.value.code == 1
+
+    def test_valid_list_is_accepted(self, tmp_path, monkeypatch):
+        config = self._set(tmp_path, monkeypatch, '["medium"]')
+        assert config["block_on"] == ["medium"]
+
+
+class TestDashboardPackaged:
+    """The dashboard template must ship inside the wheel, not just the repo."""
+
+    def test_template_is_next_to_the_module(self):
+        import prism.commands_reports as cr
+        template = Path(cr.__file__).parent / "dashboard.html"
+        assert template.is_file(), "dashboard.html missing from the package"
+        assert template.stat().st_size > 0
+
+    def test_hook_script_is_next_to_the_module(self):
+        import prism.commands_setup as cs
+        hook = Path(cs.__file__).parent / "pre-commit-hook.sh"
+        assert hook.is_file(), "pre-commit-hook.sh missing from the package"

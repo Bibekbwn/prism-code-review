@@ -12,12 +12,57 @@ No server, no database, no cloud — just local JSON files.
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
 REPORTS_DIR = ".prism-reports"
 REPORT_INDEX = os.path.join(REPORTS_DIR, "index.json")
+
+# Well-known credential prefixes. A report is meant to be shared (the dashboard
+# is a single self-contained HTML file), and an AI agent asked to fix a hardcoded
+# secret can quote it back in `suggested_code`. Masking the value keeps the
+# finding useful - rule, file, line - without copying the credential.
+_SECRET_VALUE_PATTERNS = [
+    re.compile(r"sk_(?:live|test)_[A-Za-z0-9]{10,}"),
+    re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"xox[baprs]-[A-Za-z0-9\-]{10,}"),
+    re.compile(r"AIza[0-9A-Za-z_\-]{30,}"),
+]
+
+REDACTED = "***REDACTED***"
+
+
+def redact_secrets(text):
+    """Mask credential-shaped substrings in ``text``; non-strings pass through."""
+    if not isinstance(text, str) or not text:
+        return text
+    for pattern in _SECRET_VALUE_PATTERNS:
+        text = pattern.sub(REDACTED, text)
+    return text
+
+
+def looks_like_secret(text) -> bool:
+    """True when ``text`` contains something shaped like a live credential."""
+    return isinstance(text, str) and redact_secrets(text) != text
+
+
+def _redact_findings(findings: List[dict]) -> List[dict]:
+    """Return a copy of ``findings`` with credential-shaped text masked."""
+    cleaned = []
+    for finding in findings:
+        if not isinstance(finding, dict):
+            cleaned.append(finding)
+            continue
+        safe = dict(finding)
+        for key in ("problem", "message", "suggestion", "suggested_code"):
+            if safe.get(key):
+                safe[key] = redact_secrets(safe[key])
+        cleaned.append(safe)
+    return cleaned
 
 
 def _ensure_dir():
@@ -72,7 +117,7 @@ def save_report(
         "risk_score": risk_score,
         "commit_allowed": commit_allowed,
         "token_usage": token_usage,
-        "findings": findings,
+        "findings": _redact_findings(findings),
     }
 
     # Save individual report
