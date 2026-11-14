@@ -1,6 +1,6 @@
 # PRISM — Pre-Commit Code Review System
 
-Multi-agent code review pipeline that runs **before every commit**. 10 agents (4 deterministic regex + 6 AI-powered) scan your code for security flaws, quality issues, policy violations, test gaps, architecture problems, and performance bottlenecks. Each finding includes the **file**, **line number**, **problem description**, **suggestion text**, and **suggested code fix**.
+Multi-agent code review pipeline that runs **before every commit**. 10 agents (4 deterministic regex + 6 AI-powered) scan your code for security flaws, quality issues, policy violations, test gaps, architecture problems, and performance bottlenecks. It reviews **12 languages** — Python, JavaScript/TypeScript, Go, Rust, Java, C#, C, C++, Ruby, PHP, Kotlin and Swift. Each finding includes the **file**, **line number**, **problem description**, **suggestion text**, and **suggested code fix**.
 
 **Your code never leaves your machine.** No server, no cloud, no database — just local JSON reports and a browser dashboard.
 
@@ -10,23 +10,24 @@ Multi-agent code review pipeline that runs **before every commit**. 10 agents (4
 
 1. [Features](#features)
 2. [How It Works](#how-it-works)
-3. [Installation](#installation)
-4. [Quick Start](#quick-start)
-5. [Command Reference](#command-reference)
-6. [API Key Management](#api-key-management)
-7. [Configuration](#configuration)
-8. [Agents](#agents)
-9. [Severity Levels & Blocking](#severity-levels--blocking)
-10. [Effort Levels](#effort-levels)
-11. [Report System & Dashboard](#report-system--dashboard)
-12. [Codebase Cache](#codebase-cache)
-13. [Pre-Commit Hook](#pre-commit-hook)
-14. [CI/CD Integration](#cicd-integration)
-15. [IDE Integration (LSP)](#ide-integration-lsp)
-16. [Auto-Fix](#auto-fix)
-17. [Deviation Management](#deviation-management)
-18. [Project Structure](#project-structure)
-19. [Running Tests](#running-tests)
+3. [Languages](#languages)
+4. [Installation](#installation)
+5. [Quick Start](#quick-start)
+6. [Command Reference](#command-reference)
+7. [API Key Management](#api-key-management)
+8. [Configuration](#configuration)
+9. [Agents](#agents)
+10. [Severity Levels & Blocking](#severity-levels--blocking)
+11. [Effort Levels](#effort-levels)
+12. [Report System & Dashboard](#report-system--dashboard)
+13. [Codebase Cache](#codebase-cache)
+14. [Pre-Commit Hook](#pre-commit-hook)
+15. [CI/CD Integration](#cicd-integration)
+16. [IDE Integration (LSP)](#ide-integration-lsp)
+17. [Auto-Fix](#auto-fix)
+18. [Deviation Management](#deviation-management)
+19. [Project Structure](#project-structure)
+20. [Running Tests](#running-tests)
 
 ---
 
@@ -35,6 +36,7 @@ Multi-agent code review pipeline that runs **before every commit**. 10 agents (4
 | Feature | Description |
 |---------|-------------|
 | **10 agents** | 4 deterministic regex + 6 AI agents, each specialized for a concern |
+| **12 languages** | Python, JS/TS, Go, Rust, Java, C#, C, C++, Ruby, PHP, Kotlin, Swift — not Python with the rest ignored |
 | **Rich findings** | Every finding shows file, line, problem, suggestion text, and suggested code fix |
 | **Visual dashboard** | Self-contained HTML with severity charts, agent charts, filters, and per-finding detail |
 | **Multi-provider** | Switch between Gemini, Claude, and OpenAI with one command |
@@ -42,10 +44,11 @@ Multi-agent code review pipeline that runs **before every commit**. 10 agents (4
 | **Whole-project audit** | `prism scan <path>` reviews every file, not just the diff |
 | **Environment diagnostics** | `prism doctor` checks keys, SDKs and config before you wonder why AI is silent |
 | **Pre-commit hook** | Blocks commits with critical/high findings automatically |
-| **Auto-fix** | One-click fixes for secrets, `eval()`, `debugger`, banned patterns |
+| **Auto-fix** | Language-aware fixes for secrets, `eval()`, `debugger`, banned patterns |
+| **One finding per issue** | The same problem reported by several agents is collapsed, with the other agents listed as corroboration |
 | **Codebase cache** | Only re-scans changed files on subsequent runs |
 | **IDE integration** | LSP server shows findings inline in VS Code, Vim, Emacs, Zed, Helix |
-| **CI/CD ready** | GitHub Actions workflows for tests and automated review |
+| **CI/CD ready** | GitHub Actions tests the full suite on Ubuntu **and** Windows, Python 3.11–3.13 |
 | **Test execution** | `--test` flag runs pytest on changed files before review |
 | **Finding verification** | Regex agents cross-check AI claims (halves confidence if unverified) |
 | **Zero cost** | Self-hosted, free tier of any provider |
@@ -60,7 +63,7 @@ git commit
   │       ├─→ Run pytest on changed Python files (optional, --test)
   │       ├─→ Deterministic regex agents (no API calls, instant):
   │       │     ├─→ security   (SECU-XXX)  — secrets, injection, dangerous patterns
-  │       │     ├─→ quality    (QUAL-XXX)  — complexity, naming, docstrings, type hints
+  │       │     ├─→ quality    (QUAL-XXX)  — complexity, length, naming, TODOs, imports
   │       │     ├─→ policy     (POL-XXX)   — license headers, branch naming, banned patterns
   │       │     └─→ test       (TST-XXX)   — weak assertions, test naming
   │       └─→ AI agents (when API key is configured, --effort balanced/max):
@@ -73,6 +76,44 @@ git commit
   │
   └─→ GitHub Actions (CI/CD) → runs tests + automated review on every push
 ```
+
+---
+
+## Languages
+
+Every review path reads the file's language first (`prism/langs.py`), so the agents
+measure structure and generate fixes in the language of the file instead of assuming
+Python.
+
+| Language | Extensions |
+|----------|------------|
+| Python | `.py`, `.pyi` |
+| JavaScript / TypeScript | `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx` |
+| Go | `.go` |
+| Rust | `.rs` |
+| Java | `.java` |
+| C# | `.cs` |
+| C | `.c`, `.h` |
+| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx` |
+| Ruby | `.rb`, `.rake` |
+| PHP | `.php` |
+| Kotlin | `.kt`, `.kts` |
+| Swift | `.swift` |
+
+A file with no declared language (Markdown, YAML, JSON, images) has no language-specific
+structure rules — the generic checks still run, and those files score lower on risk.
+Binary files are skipped outright rather than scanned as text.
+
+**What this changes in practice:**
+
+- **Function length and complexity are measured as structure.** Comments and string
+  literals are blanked across the whole file first, so a `{` inside a block comment,
+  or an `if` quoted in a docstring, is not counted as a branch. In the brace
+  languages that is the only way to get the count right.
+- **Auto-fixes stay in the file's language.** A hardcoded secret becomes
+  `os.getenv("NAME")` in Python, `process.env.NAME` in JavaScript,
+  `System.getenv("NAME")` in Java, `os.Getenv("NAME")` in Go, and so on — the
+  declaration is kept and only the literal is swapped. See [Auto-Fix](#auto-fix).
 
 ---
 
@@ -329,7 +370,7 @@ Removes all `*_API_KEY` entries from `.env`. AI agents will be disabled until a 
 prism reports
 ```
 
-Displays: total reviews, total findings, commits blocked, findings by severity, findings by agent, top rules.
+Displays: total reviews, total findings, commits blocked, total tokens (with input/output split and how many were AI reviews), findings by severity, findings by agent, top rules.
 
 #### `prism report <id>` — Show a specific report
 
@@ -719,9 +760,14 @@ The main configuration file. Ships with the repo — never overwritten by `prism
 | `quality.docstrings` | Flag missing docstrings (`QUAL-110`). Off by default |
 | `quality.type_hints` | Flag missing return type hints (`QUAL-111`). Off by default |
 | `quality.magic_numbers` | Flag hardcoded numbers (`QUAL-109`). Off by default |
-| `quality.line_length` | Flag lines over 120 chars (`QUAL-105`). Off by default |
-| `quality.todo_markers` | Flag TODO/FIXME/HACK markers (`QUAL-104`). Off by default |
+| `quality.line_length` | Flag lines over 120 chars (`QUAL-105`). **On** by default |
+| `quality.todo_markers` | Flag TODO/FIXME/HACK markers (`QUAL-104`). **On** by default |
 | `quality.duplication` | Flag repeated 4-line blocks (`QUAL-106`). Off by default |
+
+Every quality rule is capped at 3 findings per file, so one rule cannot fill a report
+with 200 copies of the same warning. The subjective checks (docstrings, type hints,
+magic numbers, duplication) stay off because they produce a wall of warnings
+developers learn to ignore — turn them on per project when you want them.
 
 ### `.prism-policy.json` (Deviation Management)
 
@@ -749,7 +795,7 @@ PRISM runs two layers of review. The **deterministic** regex agents run uncondit
 | Agent | Rule IDs | What It Checks | Blocks? |
 |-------|----------|---------------|---------|
 | `security` | `SECU-XXX` | Secrets (22 patterns), eval(), exec(), os.system(), SQL injection, XSS, CVEs | Yes (critical/high) |
-| `quality` | `QUAL-XXX` | File/function length, complexity, naming, imports (docstrings, type hints, magic numbers, TODO markers, duplication are opt-in) | Warns (advisory) |
+| `quality` | `QUAL-XXX` | File/function length, complexity, naming, TODO markers, line length, imports (docstrings, type hints, magic numbers, duplication are opt-in) | Warns (advisory) |
 | `policy` | `POL-XXX` | SPDX license headers, branch naming, banned patterns, copyright | Warns |
 | `test` | `TST-XXX` | Weak assertions, test naming, coverage measurement | Warns (advisory) |
 | `ai_security` | `SECU-AI-XXX` | AI semantic review of secrets, injection, auth flaws | Depends on severity |
@@ -762,6 +808,23 @@ PRISM runs two layers of review. The **deterministic** regex agents run uncondit
 ### Finding Verification
 
 AI findings in deterministic categories (secrets, dangerous patterns, duplication, file length, todos, naming) are cross-checked against the regex agents. If the regex agrees, the finding is confirmed; if not, confidence is halved (the CodeRabbit "verification agent" pattern).
+
+### One finding per issue
+
+Every agent answers the same question, so the same problem arrives several times: two
+regex agents both flag the same hardcoded key, and an AI agent then describes it again
+in its own words. The pipeline collapses those copies per `(file, line)` before the
+report is written, so a secret appears once and the blocking count is real.
+
+- Findings on **different lines** are kept. A secret *and* an O(n²) loop on the same
+  line are both kept too — the "kind" of finding decides whether two reports are the
+  same issue.
+- The surviving copy lists the other agents in `corroborated_by`, which the dashboard
+  renders as `also: ai_security, policy`.
+
+Note that this is per report. The dashboard's `Total Findings` card sums every stored
+report, so re-running `prism check` on the same file counts the finding once per run —
+that is the review timeline, not duplication within a review.
 
 ### Each finding includes
 
@@ -832,9 +895,10 @@ prism dashboard
 
 Generates a self-contained HTML file at `.prism-reports/dashboard.html` with all report data embedded. Open the printed `file:///` URL in any browser. The dashboard includes:
 
-- **Stat cards**: Total reviews, blocked, passed, total findings, blocking count
+- **Stat cards**: Total reviews, blocked, passed, total findings, blocking, tokens
 - **Findings by Severity** bar chart (critical / high / medium / low)
 - **Findings by Agent** bar chart (security / quality / policy / test / ai_*)
+- **Tokens by Review** chart, with per-report token detail
 - **Filter chips**: All / Blocked / Passed — click to filter the timeline
 - **Per-report severity bar**: Visual mix of severities for each review
 - **Per-finding detail** (click any report to expand):
@@ -849,7 +913,7 @@ Generates a self-contained HTML file at `.prism-reports/dashboard.html` with all
 ### Report data structure
 
 Each report JSON contains:
-- `id` — timestamp-based ID (e.g. `20240101T120000Z`)
+- `id` — timestamp-based ID (e.g. `20240101T120000Z`), with a numeric suffix when two reviews land in the same clock tick (`...000Z-1`) so one report never overwrites another
 - `timestamp` — ISO timestamp
 - `commit_hash` — git commit hash (if available)
 - `branch` — git branch name
@@ -858,7 +922,8 @@ Each report JSON contains:
 - `blocking` — count of blocking findings
 - `risk_score` — 0.0 to 1.0
 - `commit_allowed` — boolean
-- `findings` — array of finding objects (agent, severity, category, problem, file, line, suggestion, suggested_code, confidence, rule_id)
+- `token_usage` — per-review token snapshot (`total_tokens`, `input_tokens`, `output_tokens`, `calls`, `estimated_calls`, `by_provider`); absent on reports written before token tracking, which read as "unknown" rather than as zero
+- `findings` — array of finding objects (agent, severity, category, problem, file, line, suggestion, suggested_code, confidence, rule_id, corroborated_by)
 
 ---
 
@@ -895,42 +960,59 @@ prism uninstall-hook
 PRISM includes GitHub Actions workflows:
 
 ### `.github/workflows/ci-cd.yml` — Test CI
-Runs on every push and PR to `main`. Tests on **Ubuntu and Windows** with **Python 3.11, 3.12, 3.13**. Runs `pytest`, self-tests, and CLI smoke commands. Includes a lint job.
+Runs on every push and PR to `main`. A 2×3 matrix — **Ubuntu and Windows** × **Python 3.11, 3.12, 3.13** — so every job runs the full suite on both platforms:
+
+- `pytest tests/ -q --cov=prism --cov-report=term-missing --cov-fail-under=60` (coverage gate at 60%)
+- `prism test --quick` (built-in self-tests)
+- CLI smoke: `version`, `agents`, `help`, `key status`
+- `prism check` on a clean file with `--effort lite --no-dashboard --json`, so the
+  review path is exercised on Windows too, not just the import
+
+A separate `lint` job runs `pyflakes prism/ tests/` and is **blocking** — it is the same
+linter as the declared dev dependency, so CI and a local run agree.
 
 ### `.github/workflows/prism-review.yml` — Automated Review
 Runs on every PR. Installs PRISM and runs `prism check-diff --base origin/<base> --effort lite --json` on the PR diff. Lite mode requires no API key. For full AI review, set `GEMINI_API_KEY` in repo secrets and change `--effort lite` to `--effort balanced` in the workflow. (`check-staged` would see an empty index in a CI checkout, so it is not used here.)
+
+This job is **advisory** (`continue-on-error: true`): PRISM reviews whole changed files,
+so a self-scan would otherwise fail every PR on pre-existing debt rather than on the
+change under review.
 
 ---
 
 ## IDE Integration (LSP)
 
-PRISM speaks the Language Server Protocol (LSP) — any editor with LSP support shows findings inline.
+PRISM speaks the Language Server Protocol (LSP) — any editor with LSP support shows findings inline. Diagnostics come from the same review path as the CLI, so all **12 languages** are covered; point your editor's filetype association at the server for each one you use.
 
 **VS Code:**
 ```json
 {
   "languages.python": {
     "uri": "file:///abs/path/to/hackathon/prism/lsp.py"
+  },
+  "languages.go": {
+    "uri": "file:///abs/path/to/hackathon/prism/lsp.py"
   }
 }
+```
+
+The LSP server has zero external dependencies — it uses only the Python standard library.
+
+**Emacs (with eglot):**
+```elisp
+(eglot-install-servers
+  '((python . ("python" "prism/lsp.py"))
+    (go . ("python" "prism/lsp.py"))) :major-mode prog-mode)
 ```
 
 **Vim (with vim-lsp or coc.nvim):**
 ```viml
 let g:lsp_settings['prism'] = {
   \ 'command': ['python', 'prism/lsp.py'],
-  \ 'filetypes': ['python'],
+  \ 'filetypes': ['python', 'go', 'javascript', 'rust'],
   \ 'rootPatterns': ['.git', 'prism.json'],
   \}
 ```
-
-**Emacs (with eglot):**
-```elisp
-(eglot-install-servers
-  '((python . ("python" "prism/lsp.py")) :major-mode python-mode))
-```
-
-The LSP server has zero external dependencies — it uses only the Python standard library.
 
 ---
 
@@ -943,10 +1025,26 @@ prism check path/to/file.py --fix
 ```
 
 Auto-fixable findings include:
-- Hardcoded secrets (replaced with `os.environ.get(...)`)
-- `eval()` / `exec()` (removed)
-- `debugger` statements (removed)
-- `print()` (replaced with `logging`)
+- Hardcoded secrets (replaced with an environment lookup, in the file's own language)
+- `eval()` / `exec()` (replaced with an inert statement, or the line disabled with the language's comment marker)
+- `debugger` statements (commented out — they cannot be simply deleted without changing the block)
+- `print()` (replaced with `logging` in Python; commented out elsewhere with a note to use a logging framework)
+
+Fixes are generated in the language of the file, not in Python. A secret keeps its
+declaration and only the literal changes:
+
+| Language | Before | After |
+|----------|--------|-------|
+| Python | `password = "hunter2"` | `password = os.getenv("PASSWORD")` |
+| JavaScript | `const token = "abc";` | `const token = process.env.TOKEN;` |
+| Go | `apiKey := "abc"` | `apiKey := os.Getenv("APIKEY")` |
+| Java | `String apiKey = "abc";` | `String apiKey = System.getenv("APIKEY");` |
+| PHP | `$key = "abc";` | `$key = getenv("KEY");` |
+
+`import os` is added for Python when the generated fix needs it, and `import "os"`
+for Go when it is missing. Rust uses the fully-qualified `std::env::var(...)`, so no
+import is needed. A fix that would not compile is rejected rather than applied: the
+file is left untouched and the developer fixes it by hand.
 
 During `--prompt` mode, you can choose to apply all auto-fixable changes interactively.
 
@@ -997,6 +1095,7 @@ hackathon/
 │   ├── agents_quality.py           # Regex: complexity, naming, imports (QUAL-XXX)
 │   ├── agents_policy.py            # Regex: license, branch naming (POL-XXX)
 │   ├── agents_test.py              # Regex: weak assertions, test naming (TST-XXX)
+│   ├── langs.py                      # Per-language descriptors: comments, strings, lookup syntax
 │   ├── ai_providers.py             # Gemini/Claude/OpenAI init + retry + call dispatch
 │   ├── ai_findings.py              # JSON parse, verify, cross-check
 │   ├── ai_graph.py                 # Import graph + cross-file context
@@ -1008,34 +1107,41 @@ hackathon/
 │   ├── ai_test.py                  # AI test agent (TST-AI-XXX)
 │   ├── ai_architecture.py          # AI architecture agent (ARC-AI-XXX)
 │   ├── ai_performance.py           # AI performance agent (PERF-AI-XXX)
-│   ├── autofix.py                  # Auto-fix engine (secrets, eval, debugger, print)
+│   ├── autofix.py                  # Language-aware auto-fix (secrets, eval, debugger, print)
 │   ├── feedback.py                 # SCA CVE scanning + coverage + feedback loop
 │   ├── logging_config.py           # Structured JSON logging
 │   ├── lsp.py                      # LSP server (IDE integration, stdlib only)
 │   ├── codebase_cache.py           # Per-commit cache of file hashes + findings
 │   ├── reports.py                  # Local JSON report persistence
+│   ├── token_usage.py              # Per-review token ledger
 │   ├── dashboard.html              # Dashboard HTML template
-│   ├── setup.py                    # Installable package definition
 │   └── pre-commit-hook.sh          # Git hook script template
-├── tests/                          # 158 unit + integration tests
+├── tests/                          # 384 unit + integration tests
 │   ├── conftest.py
+│   ├── test_autofix_languages.py   # Per-language fixes and structure measurement
 │   ├── test_call_graph.py
 │   ├── test_cli_handlers.py
 │   ├── test_coverage_paths.py
 │   ├── test_golden_corpus.py
 │   ├── test_integration.py
+│   ├── test_languages.py           # Every declared language is reviewed
 │   ├── test_lsp.py
+│   ├── test_product.py
+│   ├── test_product_e2e.py
 │   ├── test_providers.py
+│   ├── test_regressions.py
 │   ├── test_security.py
-│   └── test_regressions.py
+│   └── test_token_reporting.py
 ├── .github/
 │   └── workflows/
 │       ├── ci-cd.yml               # Test CI (Ubuntu + Windows, Python 3.11–3.13)
-│       └── prism-review.yml        # Automated PR review
+│       └── prism-review.yml        # Automated PR review (advisory)
 ├── .env.example                    # Environment variable template
 ├── .gitignore
 ├── .prismignore                    # Files pre-commit review skips (see `prism ignore`)
 ├── prism.json                      # PRISM configuration
+├── pyproject.toml                  # Package definition, deps, pytest config
+├── setup.py                        # Installable package definition
 └── README.md
 ```
 
@@ -1045,10 +1151,16 @@ hackathon/
 
 ```bash
 # Install test dependencies
-pip install pytest
+pip install -e ".[dev]"        # pytest, pytest-cov, pyflakes
 
 # Run all tests
 pytest tests/ -v
+
+# Same command CI runs, with the coverage gate
+pytest tests/ -q --cov=prism --cov-report=term-missing --cov-fail-under=60
+
+# Lint (CI runs this too, and it blocks)
+pyflakes prism/ tests/
 
 # Run PRISM self-tests (includes API calls)
 prism test
@@ -1057,11 +1169,14 @@ prism test
 prism test --quick
 ```
 
-The test suite covers:
+The suite covers:
 - Security scanning (secrets, dangerous patterns)
+- Per-language behaviour: structure measurement and generated fixes for all 12 languages
 - Call graph and cross-file context
 - LSP server protocol
-- Integration (full pipeline)
+- Integration (full pipeline) and product end-to-end
+- Token accounting in reports and the dashboard
 - Regression tests for cache blocking, JSON purity, auto-fix imports,
-  dotenv secrets, AI dedup, binary skipping, quality gates, and `--fast`
+  dotenv secrets, AI dedup, binary skipping, quality gates, `--fast`, and
+  Windows report-ID collisions
 - 13 built-in self-tests (skeleton, chunking, tiers, verification, import graph, agent registration)
