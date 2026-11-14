@@ -157,27 +157,30 @@ There are only three SDKs to install. The five OpenAI-compatible providers
 
 ### Hand the tool to a teammate (no `cd`, no venv on their side)
 
-Build the wheel once, attach it to a GitHub Release, and the teammate runs
-**one** command from any folder — no virtualenv, no source checkout, no build
-tools:
+One command from any folder — no virtualenv, no source checkout, no build tools:
 
 ```bash
-# On the machine that has the repo (you):
-py -m build          # -> dist/prism_code_review-2.0.0-py3-none-any.whl
-# then: GitHub -> Releases -> Draft a new release -> tag v2.0.0
-#       -> attach the .whl -> Publish
-
 # On the teammate's machine, once. The [all] extra installs every provider SDK
 # plus python-dotenv; without an extra the regex agents run but AI agents skip:
-# (the "prism-code-review[all] @ <url>" form is required: pip does not parse
-#  extras that are appended straight onto a direct wheel URL)
-pip install "prism-code-review[all] @ https://github.com/Bibekbwn/prism-code-review/releases/download/v2.0.0/prism_code_review-2.0.0-py3-none-any.whl"
+pip install "prism-code-review[all]"
 
 # Set the API key once for every project (tool-wide):
 prism key set --global --provider gemini --key YOUR_GEMINI_API_KEY
 
 # Then in any project folder: git init, prism init, prism check ...
 ```
+
+No PyPI access (air-gapped machine, internal mirror)? Install straight from the
+GitHub Release wheel instead. Note the `name[extras] @ url` form — pip does not
+parse extras that are appended directly onto a wheel URL, so `...whl[all]`
+returns a 404:
+
+```bash
+pip install "prism-code-review[all] @ https://github.com/Bibekbwn/prism-code-review/releases/download/v2.0.0/prism_code_review-2.0.0-py3-none-any.whl"
+```
+
+Both routes give the same package. To cut a new release, see
+[Releasing](#releasing).
 
 Use `[all]` when you do not control which provider each developer will use. For
 a team standardised on one provider, install only that extra — `[gemini]`,
@@ -1340,12 +1343,22 @@ The suite covers:
 ## Releasing
 
 ```bash
-py -m build        # -> dist/prism_code_review-<version>-py3-none-any.whl
+py -m build              # -> dist/prism_code_review-<version>-*.whl and .tar.gz
+py -m twine check dist/* # fails the upload if the README does not render
 ```
 
-Then attach the wheel to a GitHub Release (Releases → Draft a new release → tag
-`v<version>` → attach the `.whl` → Publish). `dist/` is git-ignored, so the
-wheel is never committed; the Release asset URL is what developers install from.
+Then publish to both places:
+
+```bash
+# PyPI (the short install path)
+py -m twine upload dist/*
+
+# GitHub (the wheel-only fallback for machines without PyPI access)
+#Releases -> Draft a new release -> tag v<version> -> attach the .whl -> Publish
+```
+
+`dist/` is git-ignored, so the wheel is never committed — the Release asset and
+the PyPI project are what developers install from.
 
 The wheel declares no hard dependencies — providers are opt-in extras
 (`[gemini]`, `[claude]`, `[openai]`, `[all]`, `[dev]`), so a base install stays
