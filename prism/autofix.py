@@ -10,7 +10,18 @@ Based on GitHub Copilot's "suggested changes" and CodeRabbit's "One-Click Fix":
 import re
 from typing import List, Optional, Tuple
 from prism.agents import Finding
+from prism.langs import lang_for
 from prism.logging_config import logger
+
+# A declaration is a name preceded by modifiers, a type, or a qualifier
+# (`const token`, `String apiKey`, `self.password`). Taking the name from the
+# start of the line got the boundary wrong: `String apiKey` produced
+# `StringapiKey` and `\tapiKey :=` produced the single character `y`.
+_SECRET_ASSIGN = re.compile(
+    r'^(?P<head>\s*(?:[\w$]+(?:[\s*&.]*|::))*?)'
+    r'(?P<name>\$?[A-Za-z_]\w*)'
+    r'(?P<op>\s*(?::=|(?<![=!<>:])=(?!=)|:(?!=))\s*)'
+    r'(?P<q>["\'])(?P<lit>.*?)(?P=q)(?P<tail>.*)$')
 
 
 def _is_valid_python(source: str) -> bool:
@@ -36,32 +47,49 @@ def generate_fix(finding: Finding, original_content: str) -> Optional[str]:
 
     original_line = lines[line_idx]
     fix_type = _classify_fix(finding)
+    spec = _spec_for(finding)
 
     if fix_type == "remove_line":
         return _remove_line(lines, line_idx)
 
     if fix_type == "replace_secret":
-        return _replace_secret(original_line, finding)
+        return _replace_secret(original_line, finding, spec)
 
     if fix_type == "remove_eval":
-        return _remove_eval(original_line, finding)
+        return _remove_eval(original_line, finding, spec)
 
     if fix_type == "remove_exec":
-        return _remove_exec(original_line, finding)
+        return _remove_exec(original_line, finding, spec)
 
     if fix_type == "add_logging":
-        return _replace_print_with_logging(original_line, finding)
+        return _replace_print_with_logging(original_line, finding, spec)
 
     if fix_type == "remove_debugger":
-        return _remove_debugger(original_line, finding)
+        return _remove_debugger(original_line, finding, spec)
 
     if fix_type == "remove_console_log":
-        return _comment_out(original_line, finding)
+        return _comment_out(original_line, finding, spec)
 
     if fix_type == "add_test_docstring":
         return _add_test_docstring(lines, line_idx, finding)
 
     return None
+
+
+def _spec_for(finding):
+    """The language of the file a finding came from, or None if it is not source."""
+    return lang_for(getattr(finding, "file", "") or "")
+
+
+def _comment_prefix(spec):
+    """How a language starts a comment, for fixes that must disable a line."""
+    if spec is None or not spec.line_comments:
+        return "#"
+    return spec.line_comments[0]
+
+
+def _is_python(spec):
+    return spec is None or spec.name == "python"
 
 
 def _classify_fix(finding: Finding) -> str:
@@ -115,25 +143,41 @@ def _remove_line(lines: list, idx: int) -> str:
     return ""
 
 
-def _replace_secret(line: str, finding: Finding) -> str:
-    """Replace a hardcoded secret with an environment variable."""
-    # Match: var_name = "secret_value"
-    match = re.match(r'^(\s*)(\w+)\s*[:=]\s*["\']([^"\']+)["\']', line)
-    if match:
-        indent, var_name, _ = match.groups()
-        return '{}{} = os.getenv("{}")'.format(indent, var_name, var_name.upper())
-    return line
+def _replace_secret(line: str, finding: Finding, spec=None) -> str:
+    """Replace a hardcoded secret with a read from the environment.
+
+    The declaration is left as it is and only the literal is swapped, so
+    ``apiKey := "..."`` keeps its ``:=`` and its trailing ``;`` while the value
+    becomes the language's own lookup (``os.Getenv("APIKEY")`` in Go,
+    ``process.env.APIKEY`` in JS). Emitting ``os.getenv`` into a Go file would
+    not compile, which is worse than offering no fix at all.
+    """
+    env_read = spec.env_read if spec is not None else 'os.getenv("{name}")'
+    match = _SECRET_ASSIGN.match(line)
+    if not match:
+        return line
+    # PHP declares `$key`; the sigil is not part of the variable's name.
+    name = re.sub(r"[^A-Za-z0-9]", "_", match.group("name").lstrip("$")).upper()
+    return (match.group("head") + match.group("name") + match.group("op")
+            + env_read.format(name=name) + match.group("tail"))
 
 
-def _remove_dangerous_call(line: str, name: str) -> str:
+def _remove_dangerous_call(line: str, name: str, spec=None) -> str:
     """Replace a dangerous call with a syntactically valid, inert statement.
 
     Commenting out only the call left fragments such as
     ``return # eval() removed`` followed by ``# x)``, which is confusing and
     silently changes control flow. Emit a complete statement instead.
+
+    ``pass`` and ``return None`` are Python, so elsewhere the line is disabled
+    with the language's own comment marker: it cannot be wrong about syntax
+    because nothing new is executed.
     """
     indent = re.match(r"^(\s*)", line).group(1)
     stripped = line.strip()
+    if not _is_python(spec):
+        return "{}{} {}() removed - security risk: {}".format(
+            indent, _comment_prefix(spec), name, stripped)
     if re.match(r"^return\s+" + name + r"\s*\(", stripped):
         return "{}return None  # {}() removed - security risk".format(indent, name)
     match = re.match(r"^([A-Za-z_]\w*)\s*=\s*" + name + r"\s*\(", stripped)
@@ -145,26 +189,34 @@ def _remove_dangerous_call(line: str, name: str) -> str:
     return "{}# {}() removed - security risk: {}".format(indent, name, stripped)
 
 
-def _remove_eval(line: str, finding: Finding) -> str:
+def _remove_eval(line: str, finding: Finding, spec=None) -> str:
     """Replace eval() with an inert statement."""
-    return _remove_dangerous_call(line, "eval")
+    return _remove_dangerous_call(line, "eval", spec)
 
 
-def _remove_exec(line: str, finding: Finding) -> str:
+def _remove_exec(line: str, finding: Finding, spec=None) -> str:
     """Replace exec() with an inert statement."""
-    return _remove_dangerous_call(line, "exec")
+    return _remove_dangerous_call(line, "exec", spec)
 
 
-def _replace_print_with_logging(line: str, finding: Finding) -> str:
-    """Replace print() with logging.info() (import is ensured later)."""
+def _replace_print_with_logging(line: str, finding: Finding, spec=None) -> str:
+    """Replace print() with logging.info() (import is ensured later).
+
+    ``logging`` is Python's module; in another language the line is disabled and
+    the developer is pointed at the language's own logger.
+    """
     match = re.match(r'^(\s*)print\((.*)\)', line)
-    if match:
+    if match and _is_python(spec):
         indent, content = match.groups()
         return '{}logging.info({})'.format(indent, content)
+    if match:
+        indent, content = match.groups()
+        return "{}{} print() removed - use a logging framework: {}".format(
+            indent, _comment_prefix(spec), content)
     return line
 
 
-def _remove_debugger(line: str, finding: Finding) -> str:
+def _remove_debugger(line: str, finding: Finding, spec=None) -> str:
     """Comment out a debugger statement.
 
     Only matches `debugger;` when it is the statement itself, not when the
@@ -175,12 +227,15 @@ def _remove_debugger(line: str, finding: Finding) -> str:
     stripped = line.lstrip()
     if stripped.startswith(('"', "'", "r'", 'r"', "b'", 'b"', "f'", 'f"')):
         return line
-    return re.sub(r'^(\s*)debugger;', r'\1# debugger removed', line)
+    prefix = _comment_prefix(spec)
+    return re.sub(r'^(\s*)debugger;', r'\g<1>' + prefix + ' debugger removed', line)
 
 
-def _comment_out(line: str, finding: Finding) -> str:
-    """Comment out a line."""
-    return re.sub(r'^', '# ', line, count=1)
+def _comment_out(line: str, finding=None, spec=None) -> str:
+    """Comment out a line, using the language's own comment marker."""
+    if spec is None:
+        spec = _spec_for(finding)
+    return re.sub(r'^', _comment_prefix(spec) + " ", line, count=1)
 
 
 def _add_test_docstring(lines: list, idx: int, finding: Finding) -> str:
@@ -214,18 +269,55 @@ def apply_fixes(fixes: List[Tuple[Finding, str]], content: str) -> str:
         line_idx = (finding.line or 1) - 1
         if 0 <= line_idx < len(lines):
             lines[line_idx] = fixed_line
-    fixed = _ensure_imports("\n".join(lines))
+    # `import os` is Python's way of getting the lookup; adding it to a Go or
+    # JS file would be a syntax error in a language it does not belong to.
+    spec = _spec_for(fixes[0][0]) if fixes else None
+    if _is_python(spec):
+        fixed = _ensure_imports("\n".join(lines))
+    elif spec is not None and spec.name == "go":
+        # `os.Getenv` needs `import "os"`. A single import statement is legal
+        # anywhere after the package clause, so this cannot break the file.
+        fixed = _ensure_go_imports("\n".join(lines))
+    else:
+        fixed = "\n".join(lines)
 
     # The heuristics are line-local, so a fix can still produce unparsable
     # code (e.g. inside a multi-line expression). Never hand back a broken
     # file: fall back to the original and let the developer fix it manually.
-    if _is_valid_python(content) and not _is_valid_python(fixed):
+    if _is_python(spec) and _is_valid_python(content) \
+            and not _is_valid_python(fixed):
         logger.warning(
             "Auto-fix rejected: generated code for %s would not compile",
             ", ".join(str((f.line or 0)) for f, _ in fixes),
         )
         return content
     return fixed
+
+
+def _ensure_go_imports(content: str) -> str:
+    """Add ``import "os"`` when a generated fix calls ``os.Getenv``.
+
+    Go has no implicit imports, so a fix that calls ``os.Getenv`` in a file
+    that does not already import ``os`` would not build. Any ``import`` after
+    the package clause is legal, including a second one, so this is a plain
+    insertion rather than an edit of an existing import block.
+    """
+    if not re.search(r"\bos\.Getenv\b", content):
+        return content
+    # Either form: `import "os"`, or the spec on its own line inside `import (...)`.
+    # Importing the same package twice is a compile error in Go, so this guard
+    # has to see through the parenthesised form.
+    spec_line = r'^\s*(?:\w+\s+)?"os"\s*$'
+    if re.search(r'^\s*import\s+(?:\w+\s+)?"os"\s*$', content, re.MULTILINE) or \
+            re.search(spec_line, content, re.MULTILINE):
+        return content
+    lines = content.split("\n")
+    for i, line in enumerate(lines):
+        if re.match(r"^\s*package\s+\w+", line):
+            lines.insert(i + 1, "")
+            lines.insert(i + 2, 'import "os"')
+            return "\n".join(lines)
+    return content
 
 
 def _ensure_imports(content: str) -> str:

@@ -325,8 +325,8 @@ def _cmd_init(args):
                 "docstrings": False,
                 "type_hints": False,
                 "magic_numbers": False,
-                "line_length": False,
-                "todo_markers": False,
+                "line_length": True,
+                "todo_markers": True,
                 "duplication": False,
             },
         }

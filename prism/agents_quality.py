@@ -13,7 +13,7 @@ import ast
 import re
 from typing import List
 from prism.agents import BaseAgent, Finding, Severity, Blocker, register_agent
-from prism.langs import lang_for, strip_literals
+from prism.langs import lang_for, strip_source
 
 
 MAX_FUNCTION_LENGTH = 80
@@ -24,11 +24,13 @@ COMPLEXITY_THRESHOLD = 15
 # long file cannot produce 200 identical warnings.
 MAX_PER_RULE = 3
 
-# Which checks run. Structural limits (file/function length, complexity) and
-# the cheap, high-signal style checks (naming, imports) stay on; the purely
-# subjective or trivially-triggered ones are off by default and opt-in via
-# prism.json, e.g. {"quality": {"docstrings": true}}. These produced a wall
-# of warnings developers learned to ignore.
+# Which checks run. Structural limits (file/function length, complexity) and the
+# cheap, high-signal style checks (naming, imports, TODO markers, line length)
+# stay on; the purely subjective ones (docstrings, type hints, magic numbers,
+# duplication) are off by default and opt-in via prism.json, e.g.
+# {"quality": {"docstrings": true}}. Those produced a wall of warnings
+# developers learned to ignore. The remaining opt-in checks stay capped by
+# MAX_PER_RULE, so a long file cannot turn one rule into 200 warnings.
 QUALITY_DEFAULTS = {
     "file_length": True,
     "function_length": True,
@@ -36,27 +38,28 @@ QUALITY_DEFAULTS = {
     "naming": True,
     "imports": True,
     "duplication": False,
-    "todo_markers": False,
-    "line_length": False,
+    "todo_markers": True,
+    "line_length": True,
     "magic_numbers": False,
     "docstrings": False,
     "type_hints": False,
 }
 
 
-def _count_lines_in_function(lines: list, start: int, spec=None) -> int:
+def _count_lines_in_function(code_lines: list, start: int, spec=None) -> int:
     """Lines the function declared at ``start`` occupies.
 
-    An indented body (Python, Ruby) ends at the first line that is not indented
-    deeper than its declaration. A brace-delimited body (Go, Rust, the C family)
-    ends when the braces opened after the declaration close again, which is the
-    only thing that marks the end of a function there.
+    The caller has already blanked comments and string literals across the whole
+    file, so the braces counted here are structure. A brace-delimited body (Go,
+    Rust, the C family) ends when the braces opened after the declaration close
+    again; an indented body (Python, Ruby) ends at the first line that is not
+    indented deeper than its declaration.
     """
     if spec is not None and spec.body_style == "brace":
         depth = 0
         opened = False
-        for i in range(start, len(lines)):
-            for ch in strip_literals(lines[i], spec):
+        for i in range(start, len(code_lines)):
+            for ch in code_lines[i]:
                 if ch == "{":
                     depth += 1
                     opened = True
@@ -64,23 +67,22 @@ def _count_lines_in_function(lines: list, start: int, spec=None) -> int:
                     depth -= 1
             if opened and depth <= 0:
                 return i - start + 1
-        return len(lines) - start
+        return len(code_lines) - start
 
     count = 1
-    indent = len(lines[start]) - len(lines[start].lstrip())
-    for i in range(start + 1, len(lines)):
-        line = lines[i]
-        if not line.strip() or line.strip().startswith(("#", "//", "/*", "*", "*/")):
+    indent = len(code_lines[start]) - len(code_lines[start].lstrip())
+    for i in range(start + 1, len(code_lines)):
+        line = code_lines[i]
+        if not line.strip():
             continue
-        current_indent = len(line) - len(line.lstrip())
-        if current_indent <= indent and line.strip():
+        if len(line) - len(line.lstrip()) <= indent:
             break
         count += 1
     return count
 
 
-def _cyclomatic_complexity(lines: list, spec=None) -> int:
-    """Approximate cyclomatic complexity.
+def _cyclomatic_complexity(code_lines: list, spec=None) -> int:
+    """Approximate cyclomatic complexity of already-stripped lines.
 
     Counts decision points rather than every `and`/`or` occurrence: the old
     version counted both plus every `if` in comments and strings, which
@@ -96,8 +98,8 @@ def _cyclomatic_complexity(lines: list, spec=None) -> int:
         r"\b{}\b".format(op) if op.isalpha() else re.escape(op) for op in ops))
 
     complexity = 1
-    for line in lines:
-        code = strip_literals(line, spec).strip()
+    for line in code_lines:
+        code = line.strip()
         if not code:
             continue
         if decision.search(code):
@@ -139,16 +141,21 @@ class QualityAgent(BaseAgent):
             ))
 
         spec = lang_for(file_path)
+        # Blank comments and literals once for the whole file: a brace inside a
+        # block comment is not structure, and the per-line stripper cannot see
+        # that the comment opened on an earlier line.
+        code_lines = strip_source(lines, spec) if spec is not None else lines
+
         func_starts = []
         if spec is not None and spec.func_decl:
-            for i, line in enumerate(lines):
-                if spec.func_decl.match(strip_literals(line, spec)):
+            for i, code in enumerate(code_lines):
+                if spec.func_decl.match(code):
                     func_starts.append(i)
 
         for start in func_starts:
-            func_lines = _count_lines_in_function(lines, start, spec)
+            func_lines = _count_lines_in_function(code_lines, start, spec)
             complexity = _cyclomatic_complexity(
-                lines[start:start + func_lines], spec)
+                code_lines[start:start + func_lines], spec)
 
             if self._on("function_length") and func_lines > MAX_FUNCTION_LENGTH:
                 findings.append(Finding(

@@ -36,6 +36,7 @@ class LanguageSpec:
     logical_ops: Tuple[str, ...] = ()
     naming: Optional[str] = None
     env_lookup: Tuple[str, ...] = ()
+    env_read: str = 'os.getenv("{name}")'
 
 
 def _brace(name, extensions, func_decl, decision_words, **kwargs):
@@ -74,14 +75,16 @@ LANGUAGES = [
         body_style="brace",
         decision_words=("if", "for", "while", "case", "catch"),
         logical_ops=("&&", "||"), naming="camel",
-        env_lookup=(r"\bprocess\.env\b", r"\bimport\.meta\.env\b")),
+        env_lookup=(r"\bprocess\.env\b", r"\bimport\.meta\.env\b"),
+        env_read="process.env.{name}"),
     LanguageSpec(
         name="go", extensions=(".go",), line_comments=("//",), strings=('"', "`"),
         assign=r"\s*(?::=|=)\s*",
         func_decl=re.compile(r"^\s*func\s+(?:\([^)]*\)\s*)?\w+"),
         class_decl=re.compile(r"^\s*type\s+\w+\s+struct\b"),
         body_style="brace", decision_words=("if", "for", "case", "select"),
-        logical_ops=("&&", "||"), env_lookup=(r"\bos\.Getenv\b",)),
+        logical_ops=("&&", "||"), env_lookup=(r"\bos\.Getenv\b",),
+        env_read='os.Getenv("{name}")'),
     LanguageSpec(
         name="rust", extensions=(".rs",), line_comments=("//",), strings=('"',),
         func_decl=re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?"
@@ -89,24 +92,31 @@ LANGUAGES = [
                              r"(?:extern\s+\"[^\"]*\"\s+)?fn\s+\w+"),
         class_decl=re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:struct|enum|trait)\s+\w+"),
         body_style="brace", decision_words=("if", "for", "while", "match", "loop"),
-        logical_ops=("&&", "||"), env_lookup=(r"\benv::var\b",)),
+        logical_ops=("&&", "||"), env_lookup=(r"\benv::var\b",),
+        # Fully qualified: a fix that needs `use std::env;` to be added would
+        # otherwise depend on where that `use` may legally go.
+        env_read='std::env::var("{name}").unwrap_or_default()'),
     _brace("java", (".java",), re.compile(_JVM_METHOD),
            ("if", "for", "while", "case", "catch"),
            class_decl=re.compile(r"^\s*(?:public\s+)?(?:final\s+)?(?:class|interface|enum)\s+\w+"),
-           env_lookup=(r"\bSystem\.getenv\b",)),
+            env_lookup=(r"\bSystem\.getenv\b",),
+            env_read='System.getenv("{name}")'),
     _brace("csharp", (".cs",), re.compile(_JVM_METHOD),
            ("if", "for", "while", "case", "catch"),
            class_decl=re.compile(r"^\s*(?:public\s+)?(?:class|interface|struct|record)\s+\w+"),
-           env_lookup=(r"\bEnvironment\.GetEnvironmentVariable\b",)),
+           env_lookup=(r"\bEnvironment\.GetEnvironmentVariable\b",),
+           env_read='Environment.GetEnvironmentVariable("{name}")'),
     _brace("c", (".c", ".h"), re.compile(_JVM_METHOD),
            ("if", "for", "while", "case"),
            class_decl=re.compile(r"^\s*(?:struct|enum|union)\s+\w+"),
-           env_lookup=(r"\bgetenv\s*\(",)),
+           env_lookup=(r"\bgetenv\s*\(",),
+           env_read='getenv("{name}")'),
     _brace("cpp", (".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"),
            re.compile(_JVM_METHOD.replace(r"\s*\{", r"\s*(?:const\s*)?\{")),
            ("if", "for", "while", "case", "catch"),
            class_decl=re.compile(r"^\s*(?:class|struct|enum)\s+\w+"),
-           env_lookup=(r"\bgetenv\s*\(",)),
+           env_lookup=(r"\bgetenv\s*\(",),
+           env_read='std::getenv("{name}")'),
     LanguageSpec(
         name="ruby", extensions=(".rb", ".rake"), line_comments=("#",),
         strings=('"', "'"), assign=r"\s*=\s*",
@@ -114,27 +124,31 @@ LANGUAGES = [
         class_decl=re.compile(r"^\s*class\s+\w+"),
         body_style="indent",
         decision_words=("if", "elsif", "unless", "while", "until", "for", "when", "rescue"),
-        logical_ops=("and", "or"), env_lookup=(r"\bENV\s*\[",)),
+        logical_ops=("and", "or"), env_lookup=(r"\bENV\s*\[",),
+        env_read='ENV["{name}"]'),
     _brace("php", (".php",), re.compile(
         r"^\s*(?:(?:public|private|protected|static|final|abstract)\s+)*"
         r"function\s+\w+"),
         ("if", "for", "while", "case", "catch"),
         class_decl=re.compile(r"^\s*(?:(?:abstract|final)\s+)?class\s+\w+"),
-        env_lookup=(r"\bgetenv\s*\(",)),
+        env_lookup=(r"\bgetenv\s*\(",),
+        env_read='getenv("{name}")'),
     _brace("kotlin", (".kt", ".kts"), re.compile(
         r"^\s*(?:(?:public|private|protected|internal|open|override|suspend|inline|"
         r"operator|data|abstract)\s+)*fun\s+(?:<[^>]*>\s*)?\w+"),
         ("if", "for", "while", "when", "catch"),
         class_decl=re.compile(r"^\s*(?:(?:public|private|internal|open|data|abstract|sealed)\s+)*"
                               r"(?:class|interface|object)\s+\w+"),
-        env_lookup=(r"\bSystem\.getenv\b",)),
+        env_lookup=(r"\bSystem\.getenv\b",),
+        env_read='System.getenv("{name}")'),
     _brace("swift", (".swift",), re.compile(
         r"^\s*(?:(?:public|private|internal|fileprivate|open|static|class|override|"
         r"mutating|nonmutating|convenience|required)\s+)*func\s+\w+"),
         ("if", "for", "while", "case", "guard"),
         class_decl=re.compile(r"^\s*(?:(?:public|private|internal|open|final)\s+)*"
                               r"(?:class|struct|enum|protocol|extension)\s+\w+"),
-        env_lookup=(r"\bProcessInfo\.processInfo\.environment\b",)),
+        env_lookup=(r"\bProcessInfo\.processInfo\.environment\b",),
+        env_read='ProcessInfo.processInfo.environment["{name}"]'),
 ]
 
 _BY_EXT = {ext: spec for spec in LANGUAGES for ext in spec.extensions}
@@ -180,3 +194,58 @@ def strip_literals(line: str, spec: Optional[LanguageSpec] = None) -> str:
         out.append(ch)
         i += 1
     return "".join(out)
+
+
+def strip_source(lines, spec: Optional[LanguageSpec] = None):
+    """Blank comments and string literals across a whole file.
+
+    ``strip_literals`` sees one line and cannot know that a ``/*`` opened three
+    lines ago, or that a raw string spans lines. A brace inside a block comment
+    or a multi-line string was therefore counted as structure, which is what
+    made function lengths and complexity wrong in the brace languages. State
+    carries across the lines here, so the result can be measured like code.
+    """
+    line_comments = spec.line_comments if spec else ("#",)
+    strings = spec.strings if spec else ('"', "'")
+    block = ("/*", "*/") if (spec is not None and spec.body_style == "brace") else None
+
+    out = []
+    quote = None
+    in_block = False
+    for line in lines:
+        chars = []
+        i = 0
+        while i < len(line):
+            if in_block:
+                end = line.find(block[1], i)
+                if end == -1:
+                    i = len(line)
+                else:
+                    in_block = False
+                    i = end + len(block[1])
+                continue
+            ch = line[i]
+            if quote:
+                if ch == "\\":
+                    i += 2
+                    continue
+                if ch == quote:
+                    quote = None
+                i += 1
+                continue
+            if block and line.startswith(block[0], i):
+                in_block = True
+                i += len(block[0])
+                continue
+            if ch in strings:
+                quote = ch
+                i += 1
+                continue
+            if any(line.startswith(c, i) for c in line_comments):
+                break
+            chars.append(ch)
+            i += 1
+        # A string left open continues onto the next line, which is how a
+        # multi-line literal is recognised without parsing it.
+        out.append("".join(chars))
+    return out
