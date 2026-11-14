@@ -13,7 +13,7 @@ import logging
 import concurrent.futures
 
 from prism.ai_providers import (
-    get_model, API_TIMEOUT, last_model_failure, sdk_install_hint,
+    get_model, API_TIMEOUT, last_model_failure, sdk_install_hint, install_hint,
 )
 from prism.ai_findings import parse_findings, verify_findings, _AGENT_PREFIX
 from prism.agents import Finding, Severity, Blocker
@@ -313,7 +313,7 @@ def review_with_agent(system_prompt, file_path, content, agent_name,
             # The key is fine; the SDK is missing. Say so, and say which pip
             # extra fixes it — "no API key" sent developers to re-enter a key
             # that was already correct.
-            hint = sdk_install_hint(name) or "pip install 'prism-review[all]'"
+            hint = sdk_install_hint(name) or install_hint()
             message = "{} SDK not installed. Install it with: {}".format(
                 name, hint)
         elif reason == "unknown_provider":

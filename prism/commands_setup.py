@@ -679,10 +679,10 @@ def _cmd_doctor(args):
             mark, name, env_var, sdk,
             spec["default_model"]))
         if name == active_provider and has_key and not have_sdk:
-            from prism.ai_providers import sdk_install_hint
+            from prism.ai_providers import sdk_install_hint, install_hint
             problems.append(
                 "{} is active but its SDK is not installed ({})".format(
-                    name, sdk_install_hint(name) or "pip install 'prism-review[all]'"))
+                    name, sdk_install_hint(name) or install_hint()))
 
     if not any(os.getenv(spec["key"]) for spec in _PROVIDERS.values()):
         print("")

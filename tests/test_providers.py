@@ -180,10 +180,19 @@ class TestSdkInstallHint:
     """The hint must name the extra that actually supplies the SDK."""
 
     def test_gemini_maps_to_the_gemini_extra(self):
-        assert ap.sdk_install_hint("gemini") == "pip install 'prism-review[gemini]'"
+        assert ap.sdk_install_hint("gemini") == "pip install 'prism-code-review[gemini]'"
 
     def test_claude_maps_to_the_claude_extra(self):
-        assert ap.sdk_install_hint("claude") == "pip install 'prism-review[claude]'"
+        assert ap.sdk_install_hint("claude") == "pip install 'prism-code-review[claude]'"
+
+    def test_generic_hint_defaults_to_all(self):
+        assert ap.install_hint() == "pip install 'prism-code-review[all]'"
+
+    def test_dist_name_matches_pyproject(self):
+        import pathlib
+        pyproject = pathlib.Path(__file__).resolve().parent.parent / "pyproject.toml"
+        text = pyproject.read_text(encoding="utf-8")
+        assert 'name = "{}"'.format(ap.DIST_NAME) in text
 
     def test_openai_compatible_providers_share_the_openai_extra(self):
         for name in ("openai", "openrouter", "groq", "together",

@@ -42,7 +42,7 @@ Multi-agent code review pipeline that runs **before every commit**. 10 agents (4
 | **Multi-provider** | 8 providers: Gemini, Claude, OpenAI, OpenRouter, Groq, Together, DeepSeek, Mistral |
 | **Command-only setup** | `prism key set` writes the `.env` for you — no file editing ever |
 | **Install once, run anywhere** | Ship one wheel; `prism key set --global` configures every project on the machine |
-| **Self-explaining failures** | A missing SDK says `pip install 'prism-review[gemini]'`, not "no API key" |
+| **Self-explaining failures** | A missing SDK says `pip install 'prism-code-review[gemini]'`, not "no API key" |
 | **Whole-project audit** | `prism scan <path>` reviews every file, not just the diff |
 | **Environment diagnostics** | `prism doctor` checks keys, SDKs and config before you wonder why AI is silent |
 | **Pre-commit hook** | Blocks commits with critical/high findings automatically |
@@ -163,15 +163,15 @@ tools:
 
 ```bash
 # On the machine that has the repo (you):
-py -m build          # -> dist/prism_review-2.0.0-py3-none-any.whl
+py -m build          # -> dist/prism_code_review-2.0.0-py3-none-any.whl
 # then: GitHub -> Releases -> Draft a new release -> tag v2.0.0
 #       -> attach the .whl -> Publish
 
 # On the teammate's machine, once. The [all] extra installs every provider SDK
 # plus python-dotenv; without an extra the regex agents run but AI agents skip:
-# (the "prism-review[all] @ <url>" form is required: pip does not parse
+# (the "prism-code-review[all] @ <url>" form is required: pip does not parse
 #  extras that are appended straight onto a direct wheel URL)
-pip install "prism-review[all] @ https://github.com/Bibekbwn/prism-code-review/releases/download/v2.0.0/prism_review-2.0.0-py3-none-any.whl"
+pip install "prism-code-review[all] @ https://github.com/Bibekbwn/prism-code-review/releases/download/v2.0.0/prism_code_review-2.0.0-py3-none-any.whl"
 
 # Set the API key once for every project (tool-wide):
 prism key set --global --provider gemini --key YOUR_GEMINI_API_KEY
@@ -188,7 +188,7 @@ When the SDK for the active provider is missing, PRISM names it and prints the
 fix instead of claiming the key is wrong:
 
 ```
-gemini SDK not installed. Install it with: pip install 'prism-review[gemini]'
+gemini SDK not installed. Install it with: pip install 'prism-code-review[gemini]'
 ```
 
 `prism key set --global` writes the key to the install folder's `.env` (next to
@@ -1340,7 +1340,7 @@ The suite covers:
 ## Releasing
 
 ```bash
-py -m build        # -> dist/prism_review-<version>-py3-none-any.whl
+py -m build        # -> dist/prism_code_review-<version>-py3-none-any.whl
 ```
 
 Then attach the wheel to a GitHub Release (Releases → Draft a new release → tag

@@ -58,7 +58,7 @@ _circuit_open_until = 0.0
 
 # Why get_model() most recently returned None. A missing SDK and a missing key
 # both produce (None, None, None), so callers used to report "no API key" for
-# both — a developer who ran `pip install prism_review-2.0.0-py3-none-any.whl`
+# both — a developer who ran `pip install prism_code_review-2.0.0-py3-none-any.whl`
 # (no extras) was told to set a key that was already set. The reason is kept
 # here so the pipeline can name the actual problem.
 _MODEL_FAILURE = {"reason": None, "provider": None, "detail": ""}
@@ -96,12 +96,22 @@ def sdk_extra(provider):
     return _EXTRA_BY_KIND.get(spec["kind"])
 
 
+# Distribution name on PyPI. The "install it with" hint is printed by three
+# modules, so the name lives here once instead of being repeated per call site.
+DIST_NAME = "prism-code-review"
+
+
+def install_hint(extra="all"):
+    """Return the pip command that installs ``extra`` of this distribution."""
+    return "pip install '{}[{}]'".format(DIST_NAME, extra)
+
+
 def sdk_install_hint(provider):
     """Return an actionable install command for a provider's missing SDK."""
     extra = sdk_extra(provider)
     if not extra:
         return None
-    return "pip install 'prism-review[{}]'".format(extra)
+    return install_hint(extra)
 
 # Provider catalogue. `kind` selects the client shape; `key`/`model` are the
 # env vars that hold the API key and model override. `base_url` (+ optional
