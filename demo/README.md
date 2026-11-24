@@ -24,12 +24,31 @@ one of these files should block a commit.
 
 ## What each file demonstrates
 
+Counts are from a full run with AI agents enabled (the default):
+
 | File | Findings | Shows |
 |---|---|---|
-| `vulnerable.py` | 6 | Hardcoded API key, SQL injection, `shell=True`, `eval()`, `os.system()`, missing tests |
-| `app.js` | 4 | Hardcoded token, XSS via `innerHTML`, `eval()`, naming convention |
-| `service.go` | 2 | SQL injection, shell command execution |
-| `config.env` | 5 | Database URL, Stripe key, unquoted dotenv secrets |
+| `vulnerable.py` | 24 | Hardcoded API key and password, SQL injection, `shell=True`, `eval()`, `os.system()`, missing tests |
+| `app.js` | 19 | Hardcoded token, XSS via `innerHTML`, `eval()`, plain-HTTP transport, naming |
+| `service.go` | 14 | SQL injection, shell execution, ignored errors, missing docs |
+| `config.env` | 6 | Database URL, Stripe key, unquoted dotenv secrets |
+
+## AI agents
+
+All six AI agents run by default. The regex agents alone work with no key, which
+is what makes the offline path possible:
+
+```bash
+prism check demo/vulnerable.py --effort lite   # regex only, no API calls
+prism check demo/vulnerable.py                 # regex + 6 AI agents
+```
+
+The AI agents and the regex agents review the same file independently, then the
+findings are cross-checked and merged — a finding both agree on is reported once,
+with the other agents listed under "Also reported by".
+
+In the published dashboard each report shows the token cost of its AI calls
+(roughly 3.6k–9.1k tokens per file in the demo run).
 
 ## A live version of the output
 
