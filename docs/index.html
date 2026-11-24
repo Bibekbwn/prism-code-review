@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PRISM Dashboard</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; padding: 20px; }
+h1 { font-size: 28px; margin-bottom: 8px; color: #38bdf8; }
+h2 { font-size: 18px; margin: 24px 0 12px; color: #cbd5e1; }
+.container { max-width: 1280px; margin: 0 auto; }
+
+/* Stat cards */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.stat-card { background: #1e293b; border-radius: 12px; padding: 20px; text-align: center; border: 1px solid #334155; }
+.stat-value { font-size: 36px; font-weight: bold; }
+.stat-label { font-size: 13px; color: #94a3b8; margin-top: 4px; }
+
+/* Charts */
+.charts { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px; }
+.chart-card { background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155; }
+.chart-title { font-size: 14px; color: #94a3b8; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+.bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.bar-label { width: 130px; font-size: 13px; color: #cbd5e1; text-align: right; flex-shrink: 0; }
+.bar-track { flex: 1; height: 22px; background: #0f172a; border-radius: 6px; overflow: hidden; position: relative; }
+.bar-fill { height: 100%; border-radius: 6px; transition: width 0.4s; }
+.bar-value { width: 40px; font-size: 13px; font-weight: bold; text-align: right; flex-shrink: 0; }
+.sev-critical { background: #ef4444; }
+.sev-high { background: #f97316; }
+.sev-medium { background: #eab308; }
+.sev-low { background: #22c55e; }
+.agent-security { background: #8b5cf6; }
+.agent-quality { background: #3b82f6; }
+.agent-policy { background: #06b6d4; }
+.agent-test { background: #10b981; }
+.agent-ai { background: #ec4899; }
+.token-fill { background: #a78bfa; }
+.bar-value.wide { width: 76px; }
+.bar-label.token-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Filters */
+.filters { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+.filter-label { font-size: 13px; color: #94a3b8; margin-right: 4px; }
+.chip { padding: 6px 14px; border-radius: 20px; border: 1px solid #334155; background: #1e293b; color: #cbd5e1; font-size: 13px; cursor: pointer; transition: all 0.15s; }
+.chip:hover { border-color: #38bdf8; }
+.chip.active { background: #38bdf8; color: #0f172a; border-color: #38bdf8; font-weight: bold; }
+
+/* Timeline */
+.timeline { position: relative; padding-left: 30px; }
+.timeline::before { content: ''; position: absolute; left: 8px; top: 0; bottom: 0; width: 2px; background: #334155; }
+.report-item { position: relative; margin-bottom: 20px; padding: 16px; background: #1e293b; border-radius: 10px; border: 1px solid #334155; cursor: pointer; transition: border-color 0.15s; }
+.report-item:hover { border-color: #38bdf8; }
+.report-item.expanded { border-color: #38bdf8; }
+.report-item::before { content: ''; position: absolute; left: -26px; top: 20px; width: 12px; height: 12px; border-radius: 50%; background: #60a5fa; }
+.report-item.allowed::before { background: #22c55e; }
+.report-item.blocked::before { background: #ef4444; }
+.report-date { font-size: 13px; color: #94a3b8; }
+.report-files { font-size: 14px; margin: 8px 0; color: #cbd5e1; }
+.report-risk { font-size: 18px; font-weight: bold; }
+.report-meta { display: flex; gap: 16px; margin-top: 8px; font-size: 13px; color: #94a3b8; }
+.badge { display: inline-block; padding: 2px 10px; border-radius: 6px; font-size: 12px; font-weight: bold; }
+.badge-pass { background: #22c55e; color: #052e16; }
+.badge-block { background: #ef4444; color: #fff; }
+
+/* Severity bar */
+.severity-bar { height: 8px; border-radius: 4px; margin: 8px 0; display: flex; gap: 2px; }
+.severity-bar div { height: 100%; border-radius: 4px; }
+
+/* Detail view */
+.detail-panel { margin-top: 14px; padding-top: 14px; border-top: 1px solid #334155; display: none; }
+.report-item.expanded .detail-panel { display: block; }
+.finding-item { padding: 10px 12px; margin-bottom: 8px; background: #0f172a; border-radius: 8px; border-left: 3px solid #334155; font-size: 13px; }
+.finding-item.critical { border-left-color: #ef4444; }
+.finding-item.high { border-left-color: #f97316; }
+.finding-item.medium { border-left-color: #eab308; }
+.finding-item.low { border-left-color: #22c55e; }
+.finding-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.finding-severity { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
+.finding-rule { font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; color: #38bdf8; }
+.finding-msg { color: #e2e8f0; margin: 4px 0; }
+.finding-loc { color: #64748b; font-size: 12px; }
+.finding-suggestion { color: #94a3b8; margin-top: 4px; font-style: italic; }
+.finding-code { background: #020617; padding: 8px; border-radius: 6px; margin-top: 6px; font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; color: #4ade80; overflow-x: auto; white-space: pre; }
+.finding-code-head { margin-top: 8px; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #64748b; }
+.finding-conf { color: #64748b; font-size: 11px; }
+.finding-also { font-size: 11px; color: #a78bfa; background: #1e293b; border: 1px solid #334155; border-radius: 4px; padding: 1px 6px; }
+.no-findings { color: #22c55e; font-size: 13px; padding: 8px 0; }
+.empty { text-align: center; padding: 40px; color: #64748b; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>PRISM Report Dashboard</h1>
+<div id="reports">Loading...</div>
+</div>
+<script>
+const EMBEDDED_REPORTS = [{"id": "20261124T085840694509Z", "timestamp": "2026-11-24T08:58:40.694604+00:00", "commit_hash": "95a7dc3f1da319ed52b120265b9cdd2cea5974ee", "branch": "main", "files_reviewed": ["demo/vulnerable.py"], "total_findings": 6, "blocking": 5, "risk_score": 0.68, "commit_allowed": false, "token_usage": {"calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "estimated_calls": 0, "by_provider": {}}, "findings": [{"agent": "security", "severity": "critical", "category": "Secret Exposure", "problem": "Possible api key detected", "file": "demo/vulnerable.py", "line": 12, "suggestion": "Remove hardcoded secret. Use environment variables or a secrets manager.", "suggested_code": "API_KEY = os.getenv(\"API_KEY\")", "confidence": 0.85, "rule_id": "SECU-101", "corroborated_by": []}, {"agent": "security", "severity": "high", "category": "Dangerous Pattern", "problem": "SQL injection - string concatenation in query", "file": "demo/vulnerable.py", "line": 21, "suggestion": "Review this pattern for security risks.", "suggested_code": null, "confidence": 0.8, "rule_id": "SECU-207", "corroborated_by": []}, {"agent": "security", "severity": "high", "category": "Dangerous Pattern", "problem": "Shell=True in subprocess - command injection risk", "file": "demo/vulnerable.py", "line": 27, "suggestion": "Review this pattern for security risks.", "suggested_code": null, "confidence": 0.8, "rule_id": "SECU-203", "corroborated_by": []}, {"agent": "security", "severity": "high", "category": "Dangerous Pattern", "problem": "Use of eval() - code injection risk", "file": "demo/vulnerable.py", "line": 32, "suggestion": "Review this pattern for security risks.", "suggested_code": "    return None  # eval() removed - security risk", "confidence": 0.8, "rule_id": "SECU-201", "corroborated_by": []}, {"agent": "security", "severity": "high", "category": "Dangerous Pattern", "problem": "Use of os.system() - command injection risk", "file": "demo/vulnerable.py", "line": 36, "suggestion": "Review this pattern for security risks.", "suggested_code": null, "confidence": 0.8, "rule_id": "SECU-204", "corroborated_by": []}, {"agent": "test", "severity": "medium", "category": "Missing Tests", "problem": "No test file found for demo/vulnerable.py", "file": "demo/vulnerable.py", "line": null, "suggestion": "Add unit tests before committing.", "suggested_code": null, "confidence": 0.75, "rule_id": "TST-101", "corroborated_by": []}]}, {"id": "20261124T085915128188Z", "timestamp": "2026-11-24T08:59:15.128320+00:00", "commit_hash": "95a7dc3f1da319ed52b120265b9cdd2cea5974ee", "branch": "main", "files_reviewed": ["demo/app.js"], "total_findings": 4, "blocking": 3, "risk_score": 0.45, "commit_allowed": false, "token_usage": {"calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "estimated_calls": 0, "by_provider": {}}, "findings": [{"agent": "security", "severity": "critical", "category": "Secret Exposure", "problem": "Possible auth token detected", "file": "demo/app.js", "line": 4, "suggestion": "Remove hardcoded secret. Use environment variables or a secrets manager.", "suggested_code": "const API_TOKEN = process.env.API_TOKEN;", "confidence": 0.85, "rule_id": "SECU-104", "corroborated_by": []}, {"agent": "security", "severity": "high", "category": "Dangerous Pattern", "problem": "XSS - innerHTML assignment", "file": "demo/app.js", "line": 8, "suggestion": "Review this pattern for security risks.", "suggested_code": null, "confidence": 0.8, "rule_id": "SECU-208", "corroborated_by": []}, {"agent": "security", "severity": "high", "category": "Dangerous Pattern", "problem": "Use of eval() - code injection risk", "file": "demo/app.js", "line": 13, "suggestion": "Review this pattern for security risks.", "suggested_code": "  // eval() removed - security risk: return eval(code);", "confidence": 0.8, "rule_id": "SECU-201", "corroborated_by": []}, {"agent": "quality", "severity": "low", "category": "Naming Convention", "problem": "Variable 'API_TOKEN' should be camelCase, not snake_case", "file": "demo/app.js", "line": 4, "suggestion": "Use camelCase for variable names.", "suggested_code": null, "confidence": 0.8, "rule_id": "QUAL-107", "corroborated_by": []}]}, {"id": "20261124T085925284195Z", "timestamp": "2026-11-24T08:59:25.284358+00:00", "commit_hash": "95a7dc3f1da319ed52b120265b9cdd2cea5974ee", "branch": "main", "files_reviewed": ["demo/service.go"], "total_findings": 2, "blocking": 2, "risk_score": 0.2, "commit_allowed": false, "token_usage": {"calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "estimated_calls": 0, "by_provider": {}}, "findings": [{"agent": "security", "severity": "high", "category": "Dangerous Pattern", "problem": "SQL injection - string concatenation in query", "file": "demo/service.go", "line": 20, "suggestion": "Review this pattern for security risks.", "suggested_code": null, "confidence": 0.8, "rule_id": "SECU-207", "corroborated_by": []}, {"agent": "security", "severity": "high", "category": "Dangerous Pattern", "problem": "Shell command via sh - command injection risk", "file": "demo/service.go", "line": 29, "suggestion": "Review this pattern for security risks.", "suggested_code": null, "confidence": 0.8, "rule_id": "SECU-220", "corroborated_by": []}]}, {"id": "20261124T085937462162Z", "timestamp": "2026-11-24T08:59:37.462602+00:00", "commit_hash": "95a7dc3f1da319ed52b120265b9cdd2cea5974ee", "branch": "main", "files_reviewed": ["demo/config.env"], "total_findings": 5, "blocking": 5, "risk_score": 1.0, "commit_allowed": false, "token_usage": {"calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "estimated_calls": 0, "by_provider": {}}, "findings": [{"agent": "security", "severity": "critical", "category": "Secret Exposure", "problem": "Possible database connection string detected", "file": "demo/config.env", "line": 4, "suggestion": "Remove hardcoded secret. Use environment variables or a secrets manager.", "suggested_code": "DATABASE_URL=\"***REDACTED***\"", "confidence": 0.85, "rule_id": "SECU-108", "corroborated_by": []}, {"agent": "security", "severity": "critical", "category": "Secret Exposure", "problem": "Possible stripe key detected", "file": "demo/config.env", "line": 5, "suggestion": "Remove hardcoded secret. Use environment variables or a secrets manager.", "suggested_code": "API_KEY=\"***REDACTED***\"", "confidence": 0.85, "rule_id": "SECU-111", "corroborated_by": []}, {"agent": "security", "severity": "critical", "category": "Secret Exposure", "problem": "Possible unquoted dotenv secret detected", "file": "demo/config.env", "line": 5, "suggestion": "Remove hardcoded secret. Use environment variables or a secrets manager.", "suggested_code": "API_KEY=\"***REDACTED***\"", "confidence": 0.85, "rule_id": "SECU-123", "corroborated_by": []}, {"agent": "security", "severity": "critical", "category": "Secret Exposure", "problem": "Possible unquoted dotenv secret detected", "file": "demo/config.env", "line": 6, "suggestion": "Remove hardcoded secret. Use environment variables or a secrets manager.", "suggested_code": "PASSWORD=\"***REDACTED***\"", "confidence": 0.85, "rule_id": "SECU-123", "corroborated_by": []}, {"agent": "security", "severity": "critical", "category": "Secret Exposure", "problem": "Possible unquoted dotenv secret detected", "file": "demo/config.env", "line": 8, "suggestion": "Remove hardcoded secret. Use environment variables or a secrets manager.", "suggested_code": "AWS_ACCESS_KEY_ID=\"***REDACTED***\"", "confidence": 0.85, "rule_id": "SECU-123", "corroborated_by": []}]}];
+function loadReports() {
+  render({reports: (typeof EMBEDDED_REPORTS !== 'undefined' ? EMBEDDED_REPORTS : [])});
+}
+
+function render(data) {
+  const reports = (data.reports || []).slice().reverse();
+  if (!reports.length) { document.getElementById('reports').innerHTML = '<p class="empty">No reports found. Run <code>prism check</code> to generate one.</p>'; return; }
+
+  // Aggregate stats
+  const total = reports.length;
+  const blocked = reports.filter(r => !r.commit_allowed).length;
+  const findings = reports.reduce((s, r) => s + (r.total_findings || 0), 0);
+  const blocking = reports.reduce((s, r) => s + (r.blocking || 0), 0);
+
+  // Token accounting. Reports written before token tracking existed have no
+  // token_usage field: they contribute nothing here and render as unknown in
+  // the timeline, so a cost trend never dips because of missing history.
+  const tokenReports = reports.filter(r => r.token_usage);
+  const tokens = tokenReports.reduce((s, r) => s + (r.token_usage.total_tokens || 0), 0);
+  const tokenCalls = tokenReports.reduce((s, r) => s + (r.token_usage.calls || 0), 0);
+  const estimatedCalls = tokenReports.reduce((s, r) => s + (r.token_usage.estimated_calls || 0), 0);
+
+  // Severity counts
+  const sevCounts = {critical: 0, high: 0, medium: 0, low: 0};
+  // Agent counts
+  const agentCounts = {};
+  // Rule counts
+  const ruleCounts = {};
+
+  reports.forEach(r => {
+    (r.findings || []).forEach(f => {
+      const sev = (f.severity || 'low').toLowerCase();
+      if (sevCounts[sev] !== undefined) sevCounts[sev]++;
+      const agent = f.agent || 'unknown';
+      agentCounts[agent] = (agentCounts[agent] || 0) + 1;
+      if (f.rule_id) ruleCounts[f.rule_id] = (ruleCounts[f.rule_id] || 0) + 1;
+    });
+  });
+
+  let html = '';
+
+  // Stat cards
+  html += '<div class="stats">';
+  html += '<div class="stat-card"><div class="stat-value" style="color:#38bdf8">' + total + '</div><div class="stat-label">Total Reviews</div></div>';
+  html += '<div class="stat-card"><div class="stat-value" style="color:#ef4444">' + blocked + '</div><div class="stat-label">Blocked</div></div>';
+  html += '<div class="stat-card"><div class="stat-value" style="color:#22c55e">' + (total - blocked) + '</div><div class="stat-label">Passed</div></div>';
+  html += '<div class="stat-card"><div class="stat-value" style="color:#f97316">' + findings + '</div><div class="stat-label">Total Findings</div></div>';
+  html += '<div class="stat-card"><div class="stat-value" style="color:#eab308">' + blocking + '</div><div class="stat-label">Blocking</div></div>';
+  html += '<div class="stat-card"><div class="stat-value" style="color:#a78bfa">' + tokens.toLocaleString() + '</div><div class="stat-label">Tokens (' + tokenCalls + ' call' + (tokenCalls === 1 ? '' : 's') + (estimatedCalls ? ', ' + estimatedCalls + ' est.' : '') + ')</div></div>';
+  html += '</div>';
+
+  // Charts row
+  html += '<div class="charts">';
+
+  // Severity chart
+  const sevMax = Math.max(1, ...Object.values(sevCounts));
+  html += '<div class="chart-card"><div class="chart-title">Findings by Severity</div>';
+  ['critical', 'high', 'medium', 'low'].forEach(sev => {
+    const c = sevCounts[sev] || 0;
+    const pct = (c / sevMax * 100).toFixed(0);
+    html += '<div class="bar-row"><div class="bar-label">' + sev.toUpperCase() + '</div>';
+    html += '<div class="bar-track"><div class="bar-fill sev-' + sev + '" style="width:' + pct + '%"></div></div>';
+    html += '<div class="bar-value">' + c + '</div></div>';
+  });
+  html += '</div>';
+
+  // Agent chart
+  const agents = Object.entries(agentCounts).sort((a, b) => b[1] - a[1]);
+  const agentMax = Math.max(1, ...agents.map(a => a[1]));
+  html += '<div class="chart-card"><div class="chart-title">Findings by Agent</div>';
+  if (!agents.length) {
+    html += '<div class="empty" style="padding:12px">No findings</div>';
+  } else {
+    agents.forEach(([agent, c]) => {
+      const pct = (c / agentMax * 100).toFixed(0);
+      const cls = agent.startsWith('ai_') ? 'agent-ai' : 'agent-' + agent;
+      html += '<div class="bar-row"><div class="bar-label">' + agent + '</div>';
+      html += '<div class="bar-track"><div class="bar-fill ' + cls + '" style="width:' + pct + '%"></div></div>';
+      html += '<div class="bar-value">' + c + '</div></div>';
+    });
+  }
+  html += '</div>';
+
+  // Token chart: one bar per review that actually spent tokens.
+  const tokenSeries = tokenReports.filter(r => r.token_usage.calls)
+    .slice(0, 12).reverse();
+  html += '<div class="chart-card"><div class="chart-title">Tokens by Review</div>';
+  if (!tokenSeries.length) {
+    html += '<div class="empty" style="padding:12px">No AI usage recorded</div>';
+  } else {
+    const tokenMax = Math.max(1, ...tokenSeries.map(r => r.token_usage.total_tokens || 0));
+    tokenSeries.forEach(r => {
+      const value = r.token_usage.total_tokens || 0;
+      const pct = (value / tokenMax * 100).toFixed(0);
+      const when = new Date(r.timestamp).toLocaleDateString();
+      const rev = r.commit_hash ? r.commit_hash.substring(0, 7) : 'no-commit';
+      html += '<div class="bar-row"><div class="bar-label token-label" title="' + escapeHtml(when + ' ' + rev) + '">' + escapeHtml(when + ' ' + rev) + '</div>';
+      html += '<div class="bar-track"><div class="bar-fill token-fill" style="width:' + pct + '%"></div></div>';
+      html += '<div class="bar-value wide">' + value.toLocaleString() + '</div></div>';
+    });
+  }
+  html += '</div>';
+  html += '</div>';
+
+  // Filters
+  html += '<div class="filters">';
+  html += '<span class="filter-label">Filter:</span>';
+  html += '<span class="chip active" data-filter="all">All (' + total + ')</span>';
+  html += '<span class="chip" data-filter="blocked">Blocked (' + blocked + ')</span>';
+  html += '<span class="chip" data-filter="passed">Passed (' + (total - blocked) + ')</span>';
+  html += '</div>';
+
+  // Timeline
+  html += '<div class="timeline" id="timeline">';
+  reports.forEach((r, idx) => {
+    const cls = r.commit_allowed ? 'allowed' : 'blocked';
+    const date = new Date(r.timestamp).toLocaleDateString() + ' ' + new Date(r.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    const badgeCls = r.commit_allowed ? 'badge-pass' : 'badge-block';
+    const badgeTxt = r.commit_allowed ? 'PASS' : 'BLOCKED';
+
+    // Severity bar for this report
+    const rSev = {critical: 0, high: 0, medium: 0, low: 0};
+    (r.findings || []).forEach(f => {
+      const sev = (f.severity || 'low').toLowerCase();
+      if (rSev[sev] !== undefined) rSev[sev]++;
+    });
+    const rTotal = rSev.critical + rSev.high + rSev.medium + rSev.low;
+    let sevBar = '<div class="severity-bar">';
+    if (rTotal > 0) {
+      ['critical', 'high', 'medium', 'low'].forEach(sev => {
+        if (rSev[sev] > 0) {
+          const w = (rSev[sev] / rTotal * 100).toFixed(0);
+          sevBar += '<div class="sev-' + sev + '" style="width:' + w + '%" title="' + sev + ': ' + rSev[sev] + '"></div>';
+        }
+      });
+    }
+    sevBar += '</div>';
+
+    html += '<div class="report-item ' + cls + '" data-idx="' + idx + '" data-status="' + (r.commit_allowed ? 'passed' : 'blocked') + '">';
+    html += '<div class="report-date">' + date + ' &middot; ' + (r.branch || 'main') + ' &middot; ' + (r.commit_hash ? r.commit_hash.substring(0,7) : 'no-commit') + '</div>';
+    html += '<div class="report-risk">Risk: ' + Math.round((r.risk_score || 0) * 100) + '% <span class="badge ' + badgeCls + '">' + badgeTxt + '</span></div>';
+    html += '<div class="report-files">' + (r.files_reviewed || []).join(', ') + '</div>';
+    html += sevBar;
+    html += '<div class="report-meta"><span>' + (r.total_findings || 0) + ' findings</span><span>' + (r.blocking || 0) + ' blocking</span><span' + (r.token_usage ? '' : ' title="report predates token tracking"') + '>' + tokenLabel(r) + '</span><span>Click for details</span></div>';
+
+    // Detail panel (per-finding)
+    html += '<div class="detail-panel">';
+    html += tokenDetail(r);
+    const findingsList = r.findings || [];
+    if (!findingsList.length) {
+      html += '<div class="no-findings">No findings - clean commit</div>';
+    } else {
+      findingsList.forEach(f => {
+        const sev = (f.severity || 'low').toLowerCase();
+        html += '<div class="finding-item ' + sev + '">';
+        html += '<div class="finding-head">';
+        html += '<span class="finding-severity tag-' + (sev === 'critical' || sev === 'high' ? 'block' : 'warn') + '" style="background:' + sevColor(sev) + ';color:' + (sev === 'medium' || sev === 'low' ? '#000' : '#fff') + '">' + sev.toUpperCase() + '</span>';
+        if (f.rule_id) html += '<span class="finding-rule">' + f.rule_id + '</span>';
+        if (f.confidence) html += '<span class="finding-conf">conf=' + Math.round(f.confidence * 100) + '%</span>';
+        if (f.blocking) html += '<span class="badge badge-block">BLOCK</span>';
+        if (f.corroborated_by && f.corroborated_by.length) {
+          html += '<span class="finding-also" title="This issue was raised by more than one agent and reported once">also: ' + escapeHtml(f.corroborated_by.join(', ')) + '</span>';
+        }
+        html += '</div>';
+        if (f.problem) html += '<div class="finding-msg">' + escapeHtml(f.problem) + '</div>';
+        if (f.file) html += '<div class="finding-loc">' + escapeHtml(f.file) + (f.line ? ':' + f.line : '') + '</div>';
+        if (f.suggestion) html += '<div class="finding-suggestion">Suggestion: ' + escapeHtml(f.suggestion) + '</div>';
+        if (f.suggested_code) {
+          const isAI = String(f.agent || '').indexOf('ai_') === 0;
+          const label = isAI ? 'AI suggested code' : 'Suggested fix';
+          html += '<div class="finding-code-head">' + escapeHtml(label) + '</div>';
+          html += '<pre class="finding-code"><code>' + escapeHtml(f.suggested_code) + '</code></pre>';
+        }
+        html += '</div>';
+      });
+    }
+    html += '</div>'; // detail-panel
+
+    html += '</div>';
+  });
+  html += '</div>';
+
+  document.getElementById('reports').innerHTML = html;
+
+  // Attach click handlers for expand/collapse
+  document.querySelectorAll('.report-item').forEach(el => {
+    el.addEventListener('click', () => el.classList.toggle('expanded'));
+  });
+
+  // Attach filter handlers
+  document.querySelectorAll('.chip').forEach(el => {
+    el.addEventListener('click', () => {
+      document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+      el.classList.add('active');
+      const filter = el.dataset.filter;
+      document.querySelectorAll('.report-item').forEach(item => {
+        const status = item.dataset.status;
+        const show = filter === 'all' || status === filter;
+        item.style.display = show ? '' : 'none';
+      });
+    });
+  });
+}
+
+function sevColor(sev) {
+  return {critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#22c55e'}[sev] || '#64748b';
+}
+
+// One-line token summary for a report card. Three states, never two:
+//   no field      -> "—" (report written before token tracking)
+//   field, 0 calls -> "0 tokens (regex)"
+//   field, N calls -> "1,234 tokens" (+ "(est.)" when the provider returned
+//                     no usage and PRISM had to estimate)
+function tokenLabel(r) {
+  const tu = r.token_usage;
+  if (!tu) return '—';
+  if (!tu.calls) return '0 tokens (regex)';
+  const total = (tu.total_tokens || 0).toLocaleString();
+  return total + ' tokens' + (tu.estimated_calls ? ' (est.)' : '');
+}
+
+// Expanded-view breakdown: input/output split plus per-provider totals.
+function tokenDetail(r) {
+  const tu = r.token_usage;
+  if (!tu || !tu.calls) return '';
+  const parts = Object.entries(tu.by_provider || {}).map(([name, v]) => {
+    const sum = (v.input_tokens || 0) + (v.output_tokens || 0);
+    return escapeHtml(name) + ': ' + v.calls + ' call(s), ' + sum.toLocaleString() + ' tok';
+  });
+  const split = (tu.input_tokens || 0).toLocaleString() + ' in / '
+              + (tu.output_tokens || 0).toLocaleString() + ' out';
+  const est = tu.estimated_calls ? ' (' + tu.estimated_calls + ' estimated)' : '';
+  return '<div class="finding-loc">Tokens: ' + split + est
+       + (parts.length ? ' &middot; ' + parts.join(' &middot; ') : '') + '</div>';
+}
+
+function escapeHtml(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+loadReports();
+</script>
+</body>
+</html>

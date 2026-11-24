@@ -205,6 +205,29 @@ checkout with nothing installed.
 
 ---
 
+## Live Demo
+
+A dashboard generated from the deliberately vulnerable files in [`demo/`](demo/)
+is published at <https://bibekbwn.github.io/prism-code-review/>.
+
+Reproduce it locally — the demo files are in the repo, so no setup beyond the
+install is needed:
+
+```bash
+pip install "prism-code-review[all]"
+
+prism check demo/vulnerable.py
+prism check demo/app.js
+prism check demo/service.go
+prism check demo/config.env
+
+prism dashboard
+```
+
+Each `check` exits non-zero on purpose: every demo file is meant to be blocked.
+
+---
+
 ## Quick Start
 
 ### 1. Set your API key (command only — no file editing)
