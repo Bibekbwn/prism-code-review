@@ -28,10 +28,10 @@ Counts are from a full run with AI agents enabled (the default):
 
 | File | Findings | Shows |
 |---|---|---|
-| `vulnerable.py` | 24 | Hardcoded API key and password, SQL injection, `shell=True`, `eval()`, `os.system()`, missing tests |
-| `app.js` | 19 | Hardcoded token, XSS via `innerHTML`, `eval()`, plain-HTTP transport, naming |
-| `service.go` | 14 | SQL injection, shell execution, ignored errors, missing docs |
-| `config.env` | 6 | Database URL, Stripe key, unquoted dotenv secrets |
+| `vulnerable.py` | 20 | Hardcoded API key and database password, SQL injection, `shell=True`, `eval()`, `os.system()`, an unbounded `SELECT`, missing tests |
+| `app.js` | 15 | Hardcoded GitHub token, XSS via `innerHTML`, `eval()`, plain-HTTP transport, naming |
+| `service.go` | 12 | SQL injection, shell execution, a hardcoded DB password, missing docstrings and tests |
+| `config.env` | 4 | Database connection string, Stripe key, unquoted dotenv secrets |
 
 ## AI agents
 
@@ -48,7 +48,7 @@ findings are cross-checked and merged — a finding both agree on is reported on
 with the other agents listed under "Also reported by".
 
 In the published dashboard each report shows the token cost of its AI calls
-(roughly 3.6k–9.1k tokens per file in the demo run).
+(roughly 4.8k–9.2k tokens per file in the demo run).
 
 ## A live version of the output
 
