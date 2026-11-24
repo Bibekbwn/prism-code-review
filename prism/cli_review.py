@@ -219,6 +219,23 @@ def _kind_conflicts(a, f):
     return bool(ka and kf and not (ka & kf))
 
 
+def _is_deterministic(finding):
+    """True when the finding came from a rule rather than a model."""
+    return not finding.agent.startswith("ai_")
+
+
+def _names_a_secret_kind(finding):
+    """True when the finding says which secret it matched, not just "a secret".
+
+    "Possible stripe key detected" names a key. "Possible unquoted dotenv
+    secret detected" only names the family. Used to break a rank tie in favour
+    of the copy that says what it actually matched.
+    """
+    nouns = (_secret_subjects(_message_tokens(finding.message))
+             - _UNNAMED_SECRET_NOUNS - {"secret"})
+    return bool(nouns)
+
+
 def _same_issue(a, f):
     """True when two findings on the same line describe the same issue.
 
@@ -231,10 +248,24 @@ def _same_issue(a, f):
     the O(n^2) loop beside it on the same line; within that, secrets compare by
     noun and qualifier, and everything else by subject-word overlap.
     """
-    if _kind_conflicts(a, f):
+    # Two findings about a secret are compared by which secret they name, not by
+    # the label either agent gave them: one says "auth token", the other "secret",
+    # and that is a difference of wording rather than two problems.
+    both_secret = _about_secret(a) and _about_secret(f)
+
+    if not both_secret and _kind_conflicts(a, f):
         return False
 
-    if _about_secret(a) and _about_secret(f):
+    # Two deterministic rules on one line, both about a secret, where only one
+    # names the provider it matched: the specific rule and the catch-all dotenv
+    # rule matched the same characters. That is one secret reported twice.
+    if (_is_deterministic(a) and _is_deterministic(f)
+            and both_secret
+            and bool(_secret_qualifiers(_message_tokens(a.message)))
+            != bool(_secret_qualifiers(_message_tokens(f.message)))):
+        return True
+
+    if both_secret:
         return _same_secret(a, f)
 
     ma, mf = _message_tokens(a.message), _message_tokens(f.message)
@@ -263,8 +294,19 @@ def _same_issue(a, f):
 
 
 def _rank(f):
-    """Sort key for "which copy of a finding is worth keeping"."""
-    return (_SEVERITY_RANK.get(f.severity.value, 0), f.confidence)
+    """Sort key for "which copy of a finding is worth keeping".
+
+    Severity decides first, then confidence. When those tie, the AI copy wins:
+    it carries a concrete patch, while the deterministic copy carries a generic
+    hint. Keeping the regex copy would show "Review this pattern for security
+    risks." in place of the actual fix, which is the worse of the two.
+
+    A copy that names the secret it matched beats one that only says "a secret",
+    so the catch-all dotenv rule never displaces the provider rule on the same
+    line, whichever agent reported first.
+    """
+    return (_SEVERITY_RANK.get(f.severity.value, 0), f.confidence,
+            f.agent.startswith("ai_"), _names_a_secret_kind(f))
 
 
 def dedupe_results(results):
@@ -280,40 +322,46 @@ def dedupe_results(results):
     same line about genuinely different issues (a secret *and* an O(n^2) loop),
     are kept: that is disagreement between agents, not duplication.
     """
-    # (file, line) -> the finding kept as the representative for that location,
-    # and the list holding it. The list is needed because the representative can
-    # be replaced later by a stronger copy from another agent's result.
+    # (file, line) -> every finding kept at that location, each with the result list
+    # holding it. One representative per spot is not enough: several agents can
+    # report one issue, and a newcomer has to be compared against every copy
+    # already kept, not only the last one -- a naming complaint kept between two
+    # copies of one secret used to hide the second copy from the third.
     kept_by_spot = {}
     for r in results:
         kept = []
         for f in r.findings:
             spot = (f.file, f.line)
-            found = kept_by_spot.get(spot)
-            if found is None or not _same_issue(found[0], f):
-                kept_by_spot[spot] = (f, kept)
+            entries = kept_by_spot.setdefault(spot, [])
+            matches = [e for e in entries if _same_issue(e[0], f)]
+            if not matches:
+                entries.append((f, kept))
                 kept.append(f)
                 continue
 
-            duplicate, owner = found
-            if f.agent == duplicate.agent:
-                # The same agent raised the same issue twice: one copy, and no
-                # agent credits itself.
-                continue
+            # The strongest copy of the issue wins, whether it is already kept
+            # or the one just raised: severity, then confidence, then the copy
+            # that names what it matched.
+            candidates = [(e[0], e[1]) for e in matches] + [(f, kept)]
+            winner, winner_owner = max(candidates, key=lambda p: _rank(p[0]))
 
-            if _rank(f) > _rank(duplicate):
-                # The stronger copy wins, wherever it came from: it replaces the
-                # weaker one in the result that was holding it.
-                f.corroborated_by = [duplicate.agent] + [
-                    a for a in duplicate.corroborated_by if a != f.agent
-                ]
-                if owner is kept:
-                    _replace_in_place(kept, duplicate, f)
-                else:
-                    owner[:] = [x for x in owner if x is not duplicate]
+            for dup, dup_owner in matches:
+                if dup is winner:
+                    continue
+                if dup.agent != winner.agent and dup.agent not in winner.corroborated_by:
+                    winner.corroborated_by.append(dup.agent)
+                _discard(dup_owner, dup)
+
+            if f is winner:
+                if not any(x is f for x in kept):
                     kept.append(f)
-                kept_by_spot[spot] = (f, kept)
-            elif f.agent not in duplicate.corroborated_by:
-                duplicate.corroborated_by.append(f.agent)
+            elif f.agent != winner.agent and f.agent not in winner.corroborated_by:
+                # The newcomer is another agent's copy of the same issue: it
+                # corroborates the winner rather than becoming a finding.
+                winner.corroborated_by.append(f.agent)
+
+            rest = [e for e in entries if not _same_issue(e[0], f)]
+            kept_by_spot[spot] = rest + [(winner, winner_owner)]
         r.findings = kept
 
     # A result left with nothing is a duplicate-only result: dropping it keeps
@@ -325,15 +373,15 @@ def dedupe_results(results):
             if r.findings or not r.agent_name.startswith("ai_")]
 
 
-def _replace_in_place(items, old, new):
-    """Swap one finding for another in a list, by identity.
+def _discard(items, old):
+    """Drop one finding from a list, by identity.
 
-    ``Finding`` compares by value, so ``list.index`` would match a different
+    ``Finding`` compares by value, so ``list.remove`` would drop a different
     finding that happens to hold the same values.
     """
     for i, x in enumerate(items):
         if x is old:
-            items[i] = new
+            del items[i]
             return True
     return False
 

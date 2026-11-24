@@ -97,6 +97,45 @@ def parse_findings(result, file_path, agent_name):
     return findings
 
 
+_PREPROCESSOR = re.compile(
+    r"^\s*#\s*(define|include|if|ifdef|ifndef|elif|else|endif|undef|pragma|error|line)\b")
+
+
+def _is_comment_or_blank(text):
+    """True when a line carries no statement a finding could point at.
+
+    A model often reports the comment that introduces a defect instead of the
+    statement that has it, which leaves one secret reported twice: once by the
+    rule at the assignment, once by the model one line above.
+
+    ``#define`` is a statement, not a comment, so a preprocessor line is left
+    alone; treating it as a comment would move a finding off the line that
+    actually holds the secret.
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return True
+    if _PREPROCESSOR.match(stripped):
+        return False
+    return stripped.startswith(("#", "//", "/*", "*", "*/", "--"))
+
+
+def _snap_to_code(line, lines, max_line):
+    """Move a line that points at a comment or blank line down to the code.
+
+    Returns the original line when there is no code below it, so a file that is
+    entirely comments keeps its finding where the model put it.
+    """
+    if line is None or line < 1 or line > max_line:
+        return line
+    if not _is_comment_or_blank(lines[line - 1]):
+        return line
+    for candidate in range(line + 1, max_line + 1):
+        if not _is_comment_or_blank(lines[candidate - 1]):
+            return candidate
+    return line
+
+
 def verify_findings(findings, file_path, content):
     """Validate AI-generated findings before they reach the user."""
     if not findings:
@@ -110,6 +149,8 @@ def verify_findings(findings, file_path, content):
         if f.line is not None and (f.line < 1 or f.line > max_line):
             logger.warning("Dropped: line %s out of bounds (%d lines)", f.line, max_line)
             continue
+        if f.line is not None:
+            f.line = _snap_to_code(f.line, lines, max_line)
         if not file_path or '\x00' in file_path:
             logger.warning("Dropped: invalid file path '%s'", file_path)
             continue

@@ -38,6 +38,10 @@ h2 { font-size: 18px; margin: 24px 0 12px; color: #cbd5e1; }
 .token-fill { background: #a78bfa; }
 .bar-value.wide { width: 76px; }
 .bar-label.token-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-row.bar-hidden { display: none; }
+.chart-more { margin-top: 12px; }
+.chart-more-btn { display: inline-block; cursor: pointer; font-size: 12px; color: #38bdf8; border: 1px solid #334155; border-radius: 6px; padding: 5px 12px; transition: border-color 0.15s; user-select: none; }
+.chart-more-btn:hover { border-color: #38bdf8; }
 
 /* Filters */
 .filters { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
@@ -179,23 +183,34 @@ function render(data) {
   }
   html += '</div>';
 
-  // Token chart: one bar per review that actually spent tokens.
-  const tokenSeries = tokenReports.filter(r => r.token_usage.calls)
-    .slice(0, 12).reverse();
+  // Token chart: one bar per review that actually spent tokens. Labels name the
+  // reviewed file, because several reviews of one commit share a date and a hash
+  // and would otherwise be indistinguishable. A long history stays folded behind
+  // a toggle so the card does not grow without bound.
+  const TOKEN_PREVIEW = 5;
+  const TOKEN_MAX = 30;
+  const tokenAll = tokenReports.filter(r => r.token_usage.calls)
+    .slice(0, TOKEN_MAX).reverse();
+  const tokenHidden = Math.max(0, tokenAll.length - TOKEN_PREVIEW);
   html += '<div class="chart-card"><div class="chart-title">Tokens by Review</div>';
-  if (!tokenSeries.length) {
+  if (!tokenAll.length) {
     html += '<div class="empty" style="padding:12px">No AI usage recorded</div>';
   } else {
-    const tokenMax = Math.max(1, ...tokenSeries.map(r => r.token_usage.total_tokens || 0));
-    tokenSeries.forEach(r => {
+    const tokenMax = Math.max(1, ...tokenAll.map(r => r.token_usage.total_tokens || 0));
+    tokenAll.forEach(r => {
       const value = r.token_usage.total_tokens || 0;
       const pct = (value / tokenMax * 100).toFixed(0);
-      const when = new Date(r.timestamp).toLocaleDateString();
-      const rev = r.commit_hash ? r.commit_hash.substring(0, 7) : 'no-commit';
-      html += '<div class="bar-row"><div class="bar-label token-label" title="' + escapeHtml(when + ' ' + rev) + '">' + escapeHtml(when + ' ' + rev) + '</div>';
+      const tip = tokenReviewTip(r);
+      const foldable = tokenHidden && tokenAll.indexOf(r) < tokenHidden;
+      html += '<div class="bar-row' + (foldable ? ' bar-hidden' : '') + '" data-token-row' + (foldable ? ' data-foldable="1"' : '') + '>';
+      html += '<div class="bar-label token-label" title="' + escapeHtml(tip) + '">' + escapeHtml(tokenReviewLabel(r)) + '</div>';
       html += '<div class="bar-track"><div class="bar-fill token-fill" style="width:' + pct + '%"></div></div>';
       html += '<div class="bar-value wide">' + value.toLocaleString() + '</div></div>';
     });
+    if (tokenHidden) {
+      const more = 'Show ' + tokenHidden + ' more review' + (tokenHidden === 1 ? '' : 's');
+      html += '<div class="chart-more"><span class="chart-more-btn" id="token-more-btn">' + more + '</span></div>';
+    }
   }
   html += '</div>';
   html += '</div>';
@@ -298,6 +313,19 @@ function render(data) {
       });
     });
   });
+
+  // Token chart: reveal the folded older reviews and fold them back.
+  const moreBtn = document.getElementById('token-more-btn');
+  if (moreBtn) {
+    const foldable = document.querySelectorAll('[data-token-row][data-foldable="1"]');
+    const moreLabel = 'Show ' + foldable.length + ' more review' + (foldable.length === 1 ? '' : 's');
+    let expanded = false;
+    moreBtn.addEventListener('click', () => {
+      expanded = !expanded;
+      foldable.forEach(row => row.classList.toggle('bar-hidden', !expanded));
+      moreBtn.textContent = expanded ? 'Show fewer' : moreLabel;
+    });
+  }
 }
 
 function sevColor(sev) {
@@ -315,6 +343,23 @@ function tokenLabel(r) {
   if (!tu.calls) return '0 tokens (regex)';
   const total = (tu.total_tokens || 0).toLocaleString();
   return total + ' tokens' + (tu.estimated_calls ? ' (est.)' : '');
+}
+
+// Chart label for one review: the file it reviewed. Date and commit are useless
+// as a label when one commit is reviewed several times, so they move to the
+// tooltip, which is what a label cannot show.
+function tokenReviewLabel(r) {
+  const files = r.files_reviewed || [];
+  if (files.length === 1) return files[0].split('/').pop();
+  if (files.length > 1) return files.length + ' files';
+  return r.commit_hash ? r.commit_hash.substring(0, 7) : 'review';
+}
+
+function tokenReviewTip(r) {
+  const files = (r.files_reviewed || []).join(', ') || 'unknown file';
+  const when = new Date(r.timestamp).toLocaleString();
+  const rev = r.commit_hash ? r.commit_hash.substring(0, 7) : 'no-commit';
+  return files + ' \u00b7 ' + when + ' \u00b7 ' + (r.branch || 'main') + ' \u00b7 ' + rev;
 }
 
 // Expanded-view breakdown: input/output split plus per-provider totals.

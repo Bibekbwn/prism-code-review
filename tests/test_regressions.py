@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from prism.agents import AgentResult, Finding, Severity, Blocker, quality_gates_met
 from prism.agents_security import SecurityAgent
+from prism.ai_findings import verify_findings
 from prism.autofix import apply_fixes, _classify_fix
 from prism.cli_commands import _findings_to_agent_results
 from prism.cli_review import dedupe_results, format_report, review_file
@@ -2593,3 +2594,142 @@ class TestDashboardPackaged:
         import prism.commands_setup as cs
         hook = Path(cs.__file__).parent / "pre-commit-hook.sh"
         assert hook.is_file(), "pre-commit-hook.sh missing from the package"
+
+class TestDedupDeterministicSecrets:
+    """Two rules matching one line about one secret must report it once.
+
+    The catch-all dotenv rule and the provider-specific rule both fire on
+    API_KEY=sk_test_..., and the review listed the line twice with two rule
+    IDs, which inflated the blocking count.
+    """
+
+    def test_specific_rule_and_catchall_collapse(self):
+        specific = _finding(agent="security", rule_id="SECU-111",
+                            message="Possible stripe key detected", line=5)
+        catchall = _finding(agent="security", rule_id="SECU-123",
+                            message="Possible unquoted dotenv secret detected",
+                            line=5)
+        cleaned = dedupe_results([AgentResult("security", [specific, catchall])])
+        assert sum(len(r.findings) for r in cleaned) == 1
+        assert cleaned[0].findings[0].rule_id == "SECU-111"
+
+    def test_specific_rule_wins_across_agents(self):
+        catchall = _finding(agent="security", rule_id="SECU-123",
+                            message="Possible unquoted dotenv secret detected",
+                            line=5)
+        specific = _finding(agent="policy", rule_id="SECU-111",
+                            message="Possible stripe key detected", line=5)
+        cleaned = dedupe_results([AgentResult("security", [catchall]),
+AgentResult("policy", [specific])])
+        kept = [f for r in cleaned for f in r.findings]
+        assert len(kept) == 1
+        assert kept[0].rule_id == "SECU-111"
+
+    def test_two_named_secrets_on_one_line_are_kept(self):
+        """A line can hold two different secrets; collapsing those would hide one."""
+        aws = _finding(agent="security", rule_id="SECU-105",
+                       message="Hardcoded AWS key", line=7)
+        db = _finding(agent="policy", rule_id="SECU-103",
+                      message="Hardcoded database password", line=7)
+        cleaned = dedupe_results([AgentResult("security", [aws]),
+                                  AgentResult("policy", [db])])
+        assert sum(len(r.findings) for r in cleaned) == 2
+
+
+class TestDedupPrefersAiCopy:
+    """At equal severity and confidence the AI copy carries the real patch."""
+
+    def test_ai_copy_survives_a_tie(self):
+        regex = _finding(agent="security", rule_id="SECU-101",
+                         message="Possible api key detected", line=7)
+        ai = _finding(agent="ai_security", rule_id="SECU-AI-1",
+                      message="Hardcoded API key found in source code", line=7)
+        cleaned = dedupe_results([AgentResult("security", [regex]),
+                                  AgentResult("ai_security", [ai])])
+        kept = [f for r in cleaned for f in r.findings]
+        assert len(kept) == 1
+        assert kept[0].agent == "ai_security"
+        assert kept[0].corroborated_by == ["security"]
+
+    def test_stronger_regex_copy_still_wins(self):
+        regex = _finding(agent="security", severity=Severity.CRITICAL,
+                         confidence=0.95, line=7)
+        ai = _finding(agent="ai_security", severity=Severity.LOW,
+                      confidence=0.85, line=7)
+        cleaned = dedupe_results([AgentResult("security", [regex]),
+                                  AgentResult("ai_security", [ai])])
+        kept = [f for r in cleaned for f in r.findings]
+        assert len(kept) == 1
+        assert kept[0].agent == "security"
+
+
+class TestDedupAcrossEveryKeptCopy:
+    """A newcomer is compared with every copy at that line, not just the last.
+
+    Three agents reported one hardcoded token on line 4. A naming complaint from
+    a fourth agent was kept between the two secret copies, so the third secret
+    copy was compared only with the naming complaint, matched nothing, and the
+    same secret was listed twice.
+    """
+
+    def test_secret_copy_after_a_naming_complaint_still_collapses(self):
+        regex = _finding(agent="security", rule_id="SECU-104",
+                         message="Possible auth token detected", line=4)
+        naming = _finding(agent="quality", rule_id="QUAL-107",
+                          category="Naming",
+                          message="Variable 'API_TOKEN' should be camelCase, "
+                                  "not snake_case", line=4)
+        ai = _finding(agent="ai_security", rule_id="SECU-AI-9264",
+                      message="Hardcoded GitHub personal access token detected "
+                              "in the source code.", line=4)
+        cleaned = dedupe_results([AgentResult("security", [regex]),
+                                  AgentResult("quality", [naming]),
+                                  AgentResult("ai_security", [ai])])
+        kept = [f for r in cleaned for f in r.findings]
+        secrets = [f for f in kept if f.agent in ("security", "ai_security")]
+        assert len(secrets) == 1
+        assert len(kept) == 2
+        assert secrets[0].agent == "ai_security"
+        assert secrets[0].corroborated_by == ["security"]
+
+
+class TestLineSnapping:
+    """A finding that points at the comment above the defect lands off by one.
+
+    The model reported the API key at the comment line while the regex rule
+    reported the assignment, so the same secret appeared twice because dedupe
+    compares exact lines.
+    """
+
+    def _finding(self, line, message="Hardcoded API key", category="Secret Exposure"):
+        return Finding(agent="ai_security", severity=Severity.CRITICAL,
+                       category=category, message=message, file="a.py",
+                       line=line, rule_id="SECU-AI-1", confidence=0.85)
+
+    def test_comment_line_moves_to_the_code(self):
+        content = "# API key below\nAPI_KEY = 'abcdefghijklmnop'\n"
+        out = verify_findings([self._finding(1)], "a.py", content)
+        assert out[0].line == 2
+
+    def test_blank_line_moves_to_the_code(self):
+        content = "\n\nSELECT 1;\n"
+        out = verify_findings([self._finding(1, message="Dangerous query",
+                                             category="Dangerous Pattern")],
+                              "a.py", content)
+        assert out[0].line == 3
+
+    def test_code_line_is_left_alone(self):
+        content = "API_KEY = 'abcdefghijklmnop'\n"
+        out = verify_findings([self._finding(1)], "a.py", content)
+        assert out[0].line == 1
+
+    def test_preprocessor_line_is_not_a_comment(self):
+        """#define holds the secret; treating it as a comment would move the finding off it."""
+        content = '#define API_KEY "abcdefghijklmnop"\n'
+        out = verify_findings([self._finding(1)], "a.c", content)
+        assert out[0].line == 1
+
+    def test_comment_only_file_keeps_the_original_line(self):
+        content = "# just a note\n# nothing else\n"
+        out = verify_findings([self._finding(1)], "a.py", content)
+        assert out[0].line == 1
